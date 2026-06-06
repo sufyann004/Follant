@@ -1,0 +1,6 @@
+{
+  "name": "Admin Dashboard",
+  "description": "A production-ready full-stack admin dashboard for organization management and secure member invitations with type-specific configuration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
