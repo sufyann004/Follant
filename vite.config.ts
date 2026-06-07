@@ -1,5 +1,5 @@
 import tailwindcss from '@tailwindcss/vite';
-import react from '@vitejs/plugin-react';
+import react from '@vitejs/plugin-react-swc';
 import path from 'path';
 import {defineConfig} from 'vite';
 
@@ -16,7 +16,14 @@ export default defineConfig(() => {
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      watch:
+        process.env.DISABLE_HMR === 'true'
+          ? null
+          : {
+              // db.json is rewritten on every authenticated API call (session touch).
+              // Without this ignore, Vite full-reloads the page in a loop during dev.
+              ignored: ['**/db.json', '**/uploads/**'],
+            },
     },
   };
 });

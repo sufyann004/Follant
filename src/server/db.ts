@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import { isValidCharityRegNumber } from "../lib/validation";
 import type {
   Profile,
   Organization,
@@ -11,7 +12,6 @@ import type {
   OrgType,
   OrgStatus,
   ThemePreference,
-  UploadEntityType,
   CreateOrgInput,
   UpdateOrgInput,
   UpdateProfileInput,
@@ -22,6 +22,7 @@ import type {
 } from "../types";
 import { ACTIVITY_ACTION_CATALOG } from "../types";
 import { createActivityLog, type ActivityContext } from "./activityLog";
+import { sendOrgInviteEmailLocal, sendWelcomeEmailLocal } from "./email";
 
 const DB_PATH = path.join(process.cwd(), "db.json");
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");
@@ -124,6 +125,51 @@ function profileIdForRole(role: MemberRole): string {
   return SEED_ACCESS_PROFILES.find((p) => p.slug === slug)?.id ?? SEED_ACCESS_PROFILES[2].id;
 }
 
+function userOrgPermissions(userId: string, orgId: string) {
+  const user = store.users.find((u) => u.id === userId);
+  if (user?.isAdmin) {
+    return SEED_ACCESS_PROFILES.find((p) => p.slug === "platform_admin")!.permissions;
+  }
+  const org = store.organizations.find((o) => o.id === orgId);
+  if (org?.createdBy === userId) {
+    return SEED_ACCESS_PROFILES.find((p) => p.slug === "org_owner")!.permissions;
+  }
+  const member = store.members.find(
+    (m) => m.organizationId === orgId && m.userId === userId && m.status === "active",
+  );
+  if (!member) return {};
+  const profile = member.accessProfileId
+    ? store.accessProfiles.find((p) => p.id === member.accessProfileId)
+    : SEED_ACCESS_PROFILES.find(
+        (p) =>
+          p.slug ===
+          (member.role === "admin" ? "org_admin" : member.role === "viewer" ? "org_viewer" : "org_member"),
+      );
+  return profile?.permissions ?? {};
+}
+
+function canViewOrganization(userId: string, orgId: string): boolean {
+  const user = store.users.find((u) => u.id === userId);
+  if (user?.isAdmin) return true;
+  const org = store.organizations.find((o) => o.id === orgId);
+  if (org?.createdBy === userId) return true;
+  return store.members.some(
+    (m) =>
+      m.organizationId === orgId &&
+      m.userId === userId &&
+      (m.status === "active" || m.status === "invited"),
+  );
+}
+
+function canInviteMembers(userId: string, orgId: string): boolean {
+  return userOrgPermissions(userId, orgId).members?.invite === true;
+}
+
+function canManageOrganization(userId: string, orgId: string): boolean {
+  const perms = userOrgPermissions(userId, orgId);
+  return perms.organizations?.update === true || perms.organizations?.delete === true;
+}
+
 function defaultProfile(partial: Partial<UserRecord> & Pick<UserRecord, "id" | "email" | "fullName" | "passwordHash">): UserRecord {
   const now = new Date().toISOString();
   return {
@@ -133,8 +179,8 @@ function defaultProfile(partial: Partial<UserRecord> & Pick<UserRecord, "id" | "
     jobTitle: null,
     department: null,
     bio: null,
-    timezone: "UTC",
-    locale: "en-US",
+    timezone: "Europe/London",
+    locale: "en-GB",
     theme: "system",
     accountStatus: "active",
     notifyEmail: true,
@@ -151,12 +197,12 @@ function defaultProfile(partial: Partial<UserRecord> & Pick<UserRecord, "id" | "
 
 const DEFAULT_SEED_USER = defaultProfile({
   id: "8c715003-8820-4e3a-96bd-5bda5e656501",
-  email: "admin@example.com",
-  fullName: "System Admin",
-  jobTitle: "Platform Administrator",
+  email: "admin@example.co.uk",
+  fullName: "Alex Morgan",
+  jobTitle: "Operations Manager",
   department: "Operations",
-  phone: "+1-555-0100",
-  bio: "Default seeded admin account for evaluation.",
+  phone: "+447700900123",
+  bio: "Default demo account for local evaluation.",
   passwordHash: crypto.createHash("sha256").update("Password123!").digest("hex"),
 });
 
@@ -176,10 +222,10 @@ function baseOrg(partial: Partial<Organization> & Pick<Organization, "id" | "nam
     city: null,
     stateRegion: null,
     postalCode: null,
-    country: "US",
-    timezone: "America/Chicago",
-    locale: "en-US",
-    currency: "USD",
+    country: "GB",
+    timezone: "Europe/London",
+    locale: "en-GB",
+    currency: "GBP",
     tags: [],
     settings: {},
     schoolDistrict: null,
@@ -204,52 +250,58 @@ function baseOrg(partial: Partial<Organization> & Pick<Organization, "id" | "nam
 const SEED_ORGS: Organization[] = [
   baseOrg({
     id: "a39b360b-8d07-424a-93a5-2bc381188301",
-    name: "Oakridge Unified District",
-    slug: "oakridge-unified",
+    name: "Greenwich Borough Schools",
+    slug: "greenwich-borough-schools",
     type: "school",
     createdBy: DEFAULT_SEED_USER.id,
-    schoolDistrict: "District 204-A",
-    schoolGradeLevels: "K-12",
-    schoolAccreditation: "AdvancED",
+    schoolDistrict: "Royal Borough of Greenwich",
+    schoolGradeLevels: "Reception–Year 11",
+    schoolAccreditation: "Ofsted",
     schoolStudentCount: 4200,
-    description: "Public school district serving the Oakridge metropolitan area.",
-    contactEmail: "admin@oakridge.edu",
-    contactPhone: "+1-555-1001",
-    city: "Oakridge",
-    stateRegion: "IL",
+    description: "Community schools serving families across Greenwich.",
+    contactEmail: "admin@greenwich-schools.gov.uk",
+    contactPhone: "+442081234567",
+    addressLine1: "Royal Hill",
+    city: "London",
+    stateRegion: "Greater London",
+    postalCode: "SE10 8RA",
     createdAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
   }),
   baseOrg({
     id: "b49a370c-9e12-454b-adc6-3cd491289402",
-    name: "Hope Food Bank",
-    slug: "hope-food-bank",
+    name: "Thames Community Food Bank",
+    slug: "thames-community-food-bank",
     type: "nonprofit",
     createdBy: DEFAULT_SEED_USER.id,
-    nonprofitEin: "12-3456789",
-    nonprofitTaxStatus: "501(c)(3)",
-    nonprofitMission: "Eliminating hunger in our community through food distribution and education.",
+    nonprofitEin: "1234567",
+    nonprofitTaxStatus: "Registered charity",
+    nonprofitMission: "Reducing food poverty across South East London through distribution and advice.",
     nonprofitFoundedYear: 1998,
     description: "Regional food bank network.",
-    contactEmail: "info@hope.org",
-    city: "Springfield",
-    stateRegion: "IL",
+    contactEmail: "info@thamesfoodbank.org.uk",
+    contactPhone: "+442071234567",
+    city: "London",
+    stateRegion: "Greater London",
+    postalCode: "SE1 7PB",
     createdAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
   }),
   baseOrg({
     id: "c59c380d-0e23-465c-bdf7-4de592390503",
-    name: "Acme Corporate Ventures",
-    slug: "acme-corporate",
+    name: "Meridian Software Ltd",
+    slug: "meridian-software",
     type: "business",
     createdBy: DEFAULT_SEED_USER.id,
-    businessRegNumber: "CORP-9812-B",
+    businessRegNumber: "12345678",
     businessIndustry: "Technology",
-    businessCompanySize: "51-200",
-    businessTaxId: "98-7654321",
-    website: "https://acme.example.com",
-    description: "B2B software and consulting.",
-    contactEmail: "hello@acme.example.com",
-    city: "Chicago",
-    stateRegion: "IL",
+    businessCompanySize: "51–200",
+    businessTaxId: "GB123456789",
+    website: "https://meridian.example.co.uk",
+    description: "B2B software and consulting for UK public sector teams.",
+    contactEmail: "hello@meridian.example.co.uk",
+    contactPhone: "+441612345678",
+    city: "Manchester",
+    stateRegion: "Greater Manchester",
+    postalCode: "M1 1AE",
     createdAt: new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString(),
   }),
 ];
@@ -258,10 +310,10 @@ const SEED_MEMBERS: OrganizationMember[] = [
   {
     id: "d1111111-2041-4cf1-a3f8-8bb111111111",
     organizationId: SEED_ORGS[0].id,
-    email: "principal@oakridge.edu",
+    email: "headteacher@greenwich-schools.gov.uk",
     status: "active",
     role: "admin",
-    title: "Principal",
+    title: "Headteacher",
     department: "Administration",
     permissions: {},
     accessProfileId: profileIdForRole("admin"),
@@ -273,10 +325,10 @@ const SEED_MEMBERS: OrganizationMember[] = [
   {
     id: "d2222222-2041-4cf1-a3f8-8bb222222222",
     organizationId: SEED_ORGS[0].id,
-    email: "viceprincipal@oakridge.edu",
+    email: "deputy@greenwich-schools.gov.uk",
     status: "invited",
     role: "member",
-    title: "Vice Principal",
+    title: "Deputy Headteacher",
     permissions: {},
     accessProfileId: profileIdForRole("member"),
     invitedBy: DEFAULT_SEED_USER.id,
@@ -287,7 +339,7 @@ const SEED_MEMBERS: OrganizationMember[] = [
   {
     id: "d3333333-2041-4cf1-a3f8-8bb333333333",
     organizationId: SEED_ORGS[1].id,
-    email: "volunteer-lead@hope.org",
+    email: "volunteer-lead@thamesfoodbank.org.uk",
     status: "active",
     role: "viewer",
     title: "Volunteer Lead",
@@ -316,9 +368,9 @@ function migrateStore(raw: Record<string, unknown>): DBStore {
   );
 
   const members = ((raw.members as OrganizationMember[]) || []).map((m) => ({
-    permissions: {},
-    updatedAt: m.invitedAt,
     ...m,
+    permissions: m.permissions ?? {},
+    updatedAt: m.updatedAt ?? m.invitedAt,
   }));
 
   return {
@@ -389,15 +441,15 @@ function slugify(name: string): string {
 }
 
 function validateOrgFields(type: OrgType, data: Partial<CreateOrgInput>) {
-  if (data.name && data.name.length < 2) throw new Error("Organization name must be at least 2 characters");
+  if (data.name && data.name.length < 2) throw new Error("Organisation name must be at least 2 characters");
   if (type === "school" && (!data.schoolDistrict || !data.schoolDistrict.trim())) {
-    throw new Error("School district is required");
+    throw new Error("Local authority or trust name is required");
   }
-  if (type === "nonprofit" && (!data.nonprofitEin || !/^\d{2}-\d{7}$/.test(data.nonprofitEin))) {
-    throw new Error("EIN must fit format XX-XXXXXXX");
+  if (type === "nonprofit" && (!data.nonprofitEin || !isValidCharityRegNumber(data.nonprofitEin))) {
+    throw new Error("Enter a valid charity registration number (6–8 digits, e.g. 1234567)");
   }
   if (type === "business" && (!data.businessRegNumber || !data.businessRegNumber.trim())) {
-    throw new Error("Business registration number is required");
+    throw new Error("Companies House registration number is required");
   }
 }
 
@@ -467,11 +519,12 @@ export const db = {
       fullName,
       phone: extras?.phone || null,
       jobTitle: extras?.jobTitle || null,
-      timezone: extras?.timezone || "UTC",
+      timezone: extras?.timezone || "Europe/London",
       passwordHash: crypto.createHash("sha256").update(passwordPlain).digest("hex"),
     });
     store.users.push(user);
     if (ctx) log({ ...ctx, userId: user.id }, "auth.sign_up", `Registered account ${email}`, { entityType: "user", entityId: user.id });
+    sendWelcomeEmailLocal(email, fullName);
     saveDB(store);
     return stripUser(user);
   },
@@ -518,7 +571,7 @@ export const db = {
     saveDB(store);
   },
 
-  recordSignOut(userId: string, ctx: ActivityContext, sessionId?: string) {
+  recordSignOut(_userId: string, ctx: ActivityContext, sessionId?: string) {
     if (sessionId) {
       const s = store.sessions.find((x) => x.id === sessionId);
       if (s) {
@@ -591,6 +644,18 @@ export const db = {
     saveDB(store);
   },
 
+  resetPassword(userId: string, newPassword: string, ctx: ActivityContext) {
+    const user = this.findUserById(userId);
+    if (!user) throw new Error("User not found");
+    user.passwordHash = crypto.createHash("sha256").update(newPassword).digest("hex");
+    user.updatedAt = new Date().toISOString();
+    log(ctx, "auth.password_change", "Reset account password via email link", {
+      entityType: "user",
+      entityId: userId,
+    });
+    saveDB(store);
+  },
+
   deactivateAccount(userId: string, ctx: ActivityContext) {
     const user = this.findUserById(userId);
     if (!user) throw new Error("User not found");
@@ -610,6 +675,7 @@ export const db = {
     return stripUser(user);
   },
 
+  /** Directory: orgs created by this admin (FR #4). Detail pages use canViewOrganization separately. */
   getOrganizationsByAdmin(adminId: string) {
     return store.organizations
       .filter((o) => o.createdBy === adminId)
@@ -623,7 +689,9 @@ export const db = {
   getOrganizationById(orgId: string, adminId: string, ctx?: ActivityContext) {
     const org = store.organizations.find((o) => o.id === orgId);
     if (!org) return null;
-    if (org.createdBy !== adminId) throw new Error("RLS Violation: Unauthorized access to this organization");
+    if (!canViewOrganization(adminId, orgId)) {
+      throw new Error("You don't have permission to view this organisation");
+    }
     if (ctx) log({ ...ctx, organizationId: orgId }, "org.view", `Viewed organization ${org.name}`, { entityType: "organization", entityId: orgId });
     saveDB(store);
     return org;
@@ -643,6 +711,26 @@ export const db = {
       name: data.name,
     } as Organization);
     store.organizations.push(newOrg);
+    const creator = store.users.find((u) => u.id === adminId);
+    store.members.push({
+      id: crypto.randomUUID(),
+      organizationId: newOrg.id,
+      email: (creator?.email ?? `${adminId}@local.invalid`).toLowerCase(),
+      userId: adminId,
+      status: "active",
+      role: "admin",
+      title: null,
+      department: null,
+      phone: null,
+      inviteMessage: null,
+      invitedBy: adminId,
+      permissions: {},
+      accessProfileId: SEED_ACCESS_PROFILES.find((p) => p.slug === "org_owner")!.id,
+      invitedAt: now,
+      joinedAt: now,
+      lastActiveAt: null,
+      updatedAt: now,
+    });
     log({ ...ctx, organizationId: newOrg.id }, "org.create", `Created organization ${newOrg.name}`, {
       entityType: "organization",
       entityId: newOrg.id,
@@ -654,9 +742,14 @@ export const db = {
 
   updateOrganization(orgId: string, adminId: string, data: UpdateOrgInput, ctx: ActivityContext) {
     const org = store.organizations.find((o) => o.id === orgId);
-    if (!org || org.createdBy !== adminId) throw new Error("RLS Violation: Unauthorized");
+    if (!org || !canManageOrganization(adminId, orgId)) throw new Error("You don't have permission to change this organisation");
     const type = (data.type || org.type) as OrgType;
-    validateOrgFields(type, { ...org, ...data, type, name: data.name || org.name });
+    validateOrgFields(type, {
+      name: data.name || org.name,
+      schoolDistrict: data.schoolDistrict ?? org.schoolDistrict ?? undefined,
+      nonprofitEin: data.nonprofitEin ?? org.nonprofitEin ?? undefined,
+      businessRegNumber: data.businessRegNumber ?? org.businessRegNumber ?? undefined,
+    });
     Object.assign(org, mapOrgInput(type, { ...data, name: data.name || org.name, type }), {
       type,
       updatedAt: new Date().toISOString(),
@@ -674,7 +767,7 @@ export const db = {
     ctx: ActivityContext
   ) {
     const org = store.organizations.find((o) => o.id === orgId);
-    if (!org || org.createdBy !== adminId) throw new Error("RLS Violation: Unauthorized");
+    if (!org || org.createdBy !== adminId) throw new Error("You don't have permission to change this organisation");
     org[field] = url;
     org.updatedAt = new Date().toISOString();
     log({ ...ctx, organizationId: orgId }, field === "logoUrl" ? "org.logo_upload" : "org.banner_upload", `Updated organization ${field}`, {
@@ -687,7 +780,7 @@ export const db = {
 
   getOrganizationMembers(orgId: string, adminId: string) {
     const org = this.getOrganizationById(orgId, adminId);
-    if (!org) throw new Error("RLS Violation: Unauthorized member view");
+    if (!org) throw new Error("You don't have permission to view members for this organisation");
     return store.members
       .filter((m) => m.organizationId === orgId && m.status !== "removed")
       .sort((a, b) => new Date(b.invitedAt).getTime() - new Date(a.invitedAt).getTime());
@@ -707,11 +800,14 @@ export const db = {
     },
     ctx?: ActivityContext
   ) {
-    const org = this.getOrganizationById(orgId, adminId);
-    if (!org) throw new Error("Unauthorized: You do not have admin permissions for this organization");
+    const org = store.organizations.find((o) => o.id === orgId);
+    if (!org) throw new Error("Organisation not found");
+    if (!canInviteMembers(adminId, orgId)) {
+      throw new Error("You don't have permission to invite members");
+    }
     const normalized = email.toLowerCase().trim();
     if (store.members.some((m) => m.organizationId === orgId && m.email === normalized && m.status !== "removed")) {
-      throw new Error("Conflict: This email has already been invited to this organization");
+      throw new Error("This person has already been invited to this organisation");
     }
     const member: OrganizationMember = {
       id: crypto.randomUUID(),
@@ -740,7 +836,15 @@ export const db = {
         entityId: member.id,
         metadata: { email: normalized, role },
       });
-      console.log(`[SIMULATED MAIL] Invite sent to ${normalized} for org ${org.name}`);
+      const inviter = store.users.find((u) => u.id === adminId);
+      sendOrgInviteEmailLocal({
+        email: normalized,
+        orgId,
+        orgName: org.name,
+        role,
+        inviteMessage: extras?.inviteMessage,
+        inviterName: inviter?.fullName ?? null,
+      });
     }
     saveDB(store);
     return member;
@@ -748,7 +852,7 @@ export const db = {
 
   updateMember(orgId: string, memberId: string, adminId: string, data: Partial<OrganizationMember>, ctx: ActivityContext) {
     const org = this.getOrganizationById(orgId, adminId);
-    if (!org) throw new Error("Unauthorized");
+    if (!org) throw new Error("You don't have permission to do that");
     const member = store.members.find((m) => m.id === memberId && m.organizationId === orgId);
     if (!member) throw new Error("Member not found");
     if (data.role) {
@@ -817,8 +921,42 @@ export const db = {
 
   getOrgActivityLogs(orgId: string, adminId: string, limit = 200) {
     const org = store.organizations.find((o) => o.id === orgId && o.createdBy === adminId);
-    if (!org) throw new Error("Unauthorized");
+    if (!org) throw new Error("You don't have permission to do that");
     return store.activityLogs.filter((l) => l.organizationId === orgId).slice(0, limit);
+  },
+
+  getStatistics(adminId: string) {
+    const orgs = store.organizations.filter((o) => o.createdBy === adminId);
+    const orgIds = new Set(orgs.map((o) => o.id));
+    const members = store.members.filter(
+      (m) => orgIds.has(m.organizationId) && m.status !== "removed",
+    );
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+
+    const organizationsByType = { school: 0, nonprofit: 0, business: 0 } as Record<
+      OrgType,
+      number
+    >;
+    for (const org of orgs) {
+      organizationsByType[org.type] += 1;
+    }
+
+    return {
+      totalOrganizations: orgs.length,
+      totalMembers: members.length,
+      activeMembers: members.filter((m) => m.status === "active").length,
+      pendingInvites: members.filter((m) => m.status === "invited").length,
+      organizationsByType,
+      activityLast7Days: store.activityLogs.filter(
+        (log) => log.userId === adminId && new Date(log.createdAt).getTime() >= sevenDaysAgo,
+      ).length,
+      organizationsCreatedThisMonth: orgs.filter(
+        (o) => new Date(o.createdAt).getTime() >= monthStart.getTime(),
+      ).length,
+    };
   },
 };
 

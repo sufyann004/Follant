@@ -1,24 +1,38 @@
-import { Navigate, Outlet } from "react-router-dom";
+import { useEffect } from "react";
+import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import AppShell from "./AppShell";
-import { Loader2 } from "lucide-react";
+import { LoadingState } from "./QueryState";
 
 export default function ProtectedLayout() {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, signOut } = useAuth();
+  const location = useLocation();
+
+  const blockedReason =
+    user?.accountStatus === "deactivated" || user?.accountStatus === "suspended"
+      ? "Your account is not active. Contact an administrator."
+      : user && !user.isAdmin
+        ? "Admin access required."
+        : null;
+
+  useEffect(() => {
+    if (blockedReason) signOut();
+  }, [blockedReason, signOut]);
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6">
-        <div className="flex flex-col items-center gap-3">
-          <Loader2 className="h-10 w-10 animate-spin text-indigo-600" />
-          <p className="text-sm font-medium text-slate-500 animate-pulse">Loading administrative console...</p>
-        </div>
+      <div className="app-page flex flex-col items-center justify-center p-6 min-h-screen">
+        <LoadingState message="Loading…" />
       </div>
     );
   }
 
   if (!user) {
-    return <Navigate to="/sign-in" replace />;
+    return <Navigate to="/sign-in" replace state={{ from: location.pathname }} />;
+  }
+
+  if (blockedReason) {
+    return <Navigate to="/sign-in" replace state={{ message: blockedReason }} />;
   }
 
   return (
