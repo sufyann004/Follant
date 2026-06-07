@@ -1,0 +1,67 @@
+{
+  "users": [
+    {
+      "id": "8c715003-8820-4e3a-96bd-5bda5e656501",
+      "email": "admin@example.com",
+      "fullName": "System Admin",
+      "isAdmin": true,
+      "createdAt": "2026-06-06T15:31:24.248Z",
+      "passwordHash": "a109e36947ad56de1dca1cc49f0ef8ac9ad9a7b1aa0df41fb3c4cb73c1ff01ea"
+    }
+  ],
+  "organizations": [
+    {
+      "id": "a39b360b-8d07-424a-93a5-2bc381188301",
+      "name": "Oakridge Unified District",
+      "type": "school",
+      "createdBy": "8c715003-8820-4e3a-96bd-5bda5e656501",
+      "schoolDistrict": "District 204-A",
+      "createdAt": "2026-06-03T15:31:24.251Z"
+    },
+    {
+      "id": "b49a370c-9e12-454b-adc6-3cd491289402",
+      "name": "Hope Food Bank",
+      "type": "nonprofit",
+      "createdBy": "8c715003-8820-4e3a-96bd-5bda5e656501",
+      "nonprofitEin": "12-3456789",
+      "createdAt": "2026-06-01T15:31:24.251Z"
+    },
+    {
+      "id": "c59c380d-0e23-465c-bdf7-4de592390503",
+      "name": "Acme Corporate Ventures",
+      "type": "business",
+      "createdBy": "8c715003-8820-4e3a-96bd-5bda5e656501",
+      "businessRegNumber": "CORP-9812-B",
+      "createdAt": "2026-06-06T03:31:24.251Z"
+    }
+  ],
+  "members": [
+    {
+      "id": "d1111111-2041-4cf1-a3f8-8bb111111111",
+      "organizationId": "a39b360b-8d07-424a-93a5-2bc381188301",
+      "email": "principal@oakridge.edu",
+      "status": "active",
+      "role": "admin",
+      "invitedAt": "2026-06-04T15:31:24.251Z",
+      "joinedAt": "2026-06-04T15:31:24.251Z"
+    },
+    {
+      "id": "d2222222-2041-4cf1-a3f8-8bb222222222",
+      "organizationId": "a39b360b-8d07-424a-93a5-2bc381188301",
+      "email": "viceprincipal@oakridge.edu",
+      "status": "invited",
+      "role": "member",
+      "invitedAt": "2026-06-05T15:31:24.251Z",
+      "joinedAt": null
+    },
+    {
+      "id": "d3333333-2041-4cf1-a3f8-8bb333333333",
+      "organizationId": "b49a370c-9e12-454b-adc6-3cd491289402",
+      "email": "volunteer-lead@hope.org",
+      "status": "active",
+      "role": "member",
+      "invitedAt": "2026-06-02T15:31:24.251Z",
+      "joinedAt": "2026-06-03T03:31:24.251Z"
+    }
+  ]
+}
