@@ -12,7 +12,7 @@ Built with React 18, Vite, TypeScript, Supabase, shadcn/ui, and TanStack Query.
 - **Auth** — Sign up / sign in with email and password. All admin routes are protected.
 - **Organizations** — Create organizations of three types (School, Nonprofit, Business), each with a type-specific required field.
 - **Invitations** — Invite members to any organization by email. Duplicate invites are blocked. Invited members appear in the member list with their status.
-- **Directory** — View all your organizations in one place with member counts and type badges. Click into any org to see its members.
+- **Directory** — Lists every organization you created: name, type badge, member count, and created date. Click a row to open the detail page (members list + invite form). Search and type filters included.
 
 ---
 
@@ -51,27 +51,29 @@ npm install
 ### 2. Environment variables
 
 ```bash
-cp .env.example .env
+cp .env.example .env.development
 ```
 
-Fill in your Supabase project values:
+**With Supabase** (production path): set `VITE_SUPABASE_URL_DEV` and `VITE_SUPABASE_ANON_KEY_DEV` from your project dashboard.
 
-```
-VITE_SUPABASE_URL=https://your-project.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key
-```
+**Without Supabase** (local demo): omit those vars — the app uses Express + `db.json` with seeded credentials below.
 
 ### 3. Database
 
-Run the migration SQL against your Supabase project. In the Supabase dashboard, go to **SQL Editor** and paste the contents of `supabase/migrations/001_initial_schema.sql`.
+Apply migrations in order (`001` through `006`):
+
+```bash
+npm run supabase:db:push
+```
+
+Or paste each file from `supabase/migrations/` into the Supabase SQL Editor.
 
 ### 4. Edge Functions
 
 ```bash
 npx supabase login
 npx supabase link --project-ref your-project-id
-npx supabase secrets set SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-npx supabase functions deploy
+npm run supabase:functions:deploy
 ```
 
 ### 5. Run locally
@@ -113,17 +115,34 @@ Feature work branches off `development`. `main` only receives merges from `devel
 
 ---
 
-## Shortcuts and tradeoffs
+## Data model (minimum)
 
-- **Email delivery is stubbed.** The `invite-member` Edge Function logs where the send step would go. Plugging in Resend or SendGrid is a one-function change.
-- **No invitation acceptance flow.** Invited members appear with status `invited`. Linking an accepted invite to an auth user (the stretch goal) is not implemented.
-- **No per-org role management UI.** The schema supports `admin` and `member` roles, but the UI only assigns `member` on invite.
+| Table | Key columns |
+|---|---|
+| `profiles` | `id` (FK → `auth.users`), `full_name`, `email`, `is_admin` |
+| `organizations` | `id`, `name`, `type`, `created_by` (FK → `auth.users`), `created_at`, type-specific fields (`school_district`, `nonprofit_ein`, `business_reg_number`, …) |
+| `organization_members` | `id`, `organization_id`, `user_id` (nullable until accepted), `email`, `status`, `role`, `invited_at`, `joined_at` |
+
+RLS, RBAC access profiles, audit logging, and directory indexes are in migrations `003`–`006`. See [supabase/README.md](supabase/README.md).
 
 ---
 
-## What I'd do with another day
+## Production readiness
 
-- Implement the invitation acceptance flow (magic link → sign up → member row linked to user)
-- Add search and type filtering to the organization directory
-- Write a Playwright end-to-end test covering sign-in → create org → invite member
-- Set up a separate Supabase project for the development environment
+| Area | Status |
+|---|---|
+| Auth (Supabase or file-db fallback) | Protected routes, admin-only (`is_admin`), deactivated/suspended blocked |
+| Org create / invite | Edge Functions + Zod + DB CHECK constraints + RBAC |
+| Directory | Filtered by `created_by`, batched member counts, indexed |
+| Security | RLS on all tables, invite via `can_invite_members`, audit via `log_activity()` only |
+| Deploy | Vite build + Supabase migrations/functions; see setup above |
+
+Remaining optional work: real email delivery, invitation acceptance flow, Playwright E2E, separate dev Supabase project.
+
+---
+
+## Shortcuts and tradeoffs
+
+- **Email delivery is stubbed.** The `invite-member` Edge Function logs where the send step would go. Plugging in Resend or SendGrid is a one-function change.
+- **No invitation acceptance flow.** Invited members appear with status `invited`. Linking an accepted invite to an auth user is not implemented.
+- **File uploads** (avatar, logo, banner) use Express local storage when not on Supabase Storage.

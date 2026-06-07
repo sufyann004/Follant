@@ -1,6 +1,5 @@
 import express from "express";
 import path from "path";
-import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { db } from "./src/server/db.ts";
 import { upload, publicUploadUrl } from "./src/server/upload.ts";
@@ -15,6 +14,7 @@ import {
   changePasswordSchema,
   ACTIVITY_ACTIONS,
 } from "./src/types.ts";
+import { sendPasswordResetEmailLocal, consumePasswordResetToken } from "./src/server/email.ts";
 
 interface TokenPayload {
   id: string;
@@ -67,8 +67,12 @@ async function startServer() {
       return null;
     }
     const record = db.findUserById(user.id);
-    if (!record || record.accountStatus === "deactivated") {
-      res.status(403).json({ error: "Account is deactivated" });
+    if (!record || record.accountStatus === "deactivated" || record.accountStatus === "suspended") {
+      res.status(403).json({ error: "Account is not active" });
+      return null;
+    }
+    if (!record.isAdmin) {
+      res.status(403).json({ error: "Admin access required" });
       return null;
     }
     return user;
@@ -98,7 +102,7 @@ async function startServer() {
     try {
       const { email, password, fullName, phone, jobTitle, timezone } = req.body;
       if (!email || !password || !fullName) return res.status(400).json({ error: "All fields are required" });
-      if (password.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters" });
+      if (password.length < 8) return res.status(400).json({ error: "Password must be at least 8 characters" });
       const profile = db.createUser(email, password, fullName, { phone, jobTitle, timezone }, activityCtx(req, "system"));
       const meta = getRequestMeta(req);
       const session = db.createSession(profile.id, meta);
@@ -124,6 +128,42 @@ async function startServer() {
     if (!current) return res.status(404).json({ error: "User profile not found" });
     const { passwordHash, ...profile } = current;
     return res.json({ user: profile });
+  });
+
+  app.post("/api/auth/forgot-password", (req, res) => {
+    try {
+      const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+      if (!email) return res.status(400).json({ error: "Email is required" });
+      const user = db.findUserByEmail(email);
+      if (user) {
+        sendPasswordResetEmailLocal(email, user.id);
+      }
+      return res.json({ ok: true, message: "If an account exists for that email, a reset link has been sent." });
+    } catch (err) {
+      return res.status(500).json({ error: err instanceof Error ? err.message : "Request failed" });
+    }
+  });
+
+  app.post("/api/auth/reset-password", (req, res) => {
+    try {
+      const { token, password } = req.body ?? {};
+      if (!token || !password) return res.status(400).json({ error: "Token and password are required" });
+      if (typeof password !== "string" || password.length < 8) {
+        return res.status(400).json({ error: "Password must be at least 8 characters" });
+      }
+      const entry = consumePasswordResetToken(String(token));
+      if (!entry) return res.status(400).json({ error: "Invalid or expired reset link" });
+      db.resetPassword(entry.userId, password, activityCtx(req, entry.userId));
+      return res.json({ ok: true });
+    } catch (err) {
+      return res.status(500).json({ error: err instanceof Error ? err.message : "Reset failed" });
+    }
+  });
+
+  app.get("/api/statistics", (req, res) => {
+    const user = requireAuth(req, res);
+    if (!user) return;
+    return res.json(db.getStatistics(user.id));
   });
 
   // ─── Account management ─────────────────────────────────────────────────────

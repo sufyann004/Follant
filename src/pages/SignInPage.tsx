@@ -1,18 +1,32 @@
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useAuth } from "../contexts/AuthContext";
 import { signInSchema } from "../types";
 import { Building2, Eye, EyeOff, Loader2, KeyRound } from "lucide-react";
+import { Button } from "@/src/components/ui/button";
+import { Input } from "@/src/components/ui/input";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/src/components/ui/card";
+import { Alert, AlertDescription, AlertTitle } from "@/src/components/ui/alert";
+import { FormField } from "@/src/components/forms/FormField";
+import type { z } from "zod";
 
-type SignInFormInputs = typeof signInSchema._input;
+type SignInFormInputs = z.infer<typeof signInSchema>;
 
 export default function SignInPage() {
   const { signIn } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [showPassword, setShowPassword] = useState(false);
-  const [globalError, setGlobalError] = useState<string | null>(null);
+  const [globalError, setGlobalError] = useState<string | null>(
+    (location.state as { message?: string } | null)?.message ?? null,
+  );
+
+  useEffect(() => {
+    const msg = (location.state as { message?: string } | null)?.message;
+    if (msg) setGlobalError(msg);
+  }, [location.state]);
 
   const {
     register,
@@ -20,10 +34,7 @@ export default function SignInPage() {
     formState: { errors, isSubmitting },
   } = useForm<SignInFormInputs>({
     resolver: zodResolver(signInSchema),
-    defaultValues: {
-      email: "",
-      password: "",
-    },
+    defaultValues: { email: "", password: "" },
   });
 
   const onSubmit = async (data: SignInFormInputs) => {
@@ -31,120 +42,108 @@ export default function SignInPage() {
     try {
       await signIn(data.email, data.password);
       navigate("/orgs");
-    } catch (err: any) {
-      setGlobalError(err.message || "An unexpected sign-in error occurred.");
+    } catch (err: unknown) {
+      setGlobalError(err instanceof Error ? err.message : "An unexpected sign-in error occurred.");
     }
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
-        {/* Brand Header */}
-        <div className="flex flex-col items-center mb-8">
-          <div className="h-12 w-12 rounded-xl bg-indigo-600 flex items-center justify-center shadow-md mb-3 text-white">
+    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+      <div className="w-full max-w-md space-y-6">
+        <div className="flex flex-col items-center text-center">
+          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
             <Building2 className="h-7 w-7" />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Admin Dashboard</h1>
-          <p className="text-sm text-slate-500 mt-1">Sign in to manage and provision organizations</p>
+          <h1 className="text-2xl font-bold tracking-tight">Follant</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Sign in to manage your organisations</p>
         </div>
 
-        {/* Credentials Sandbox Showcase Helper */}
-        <div className="mb-6 bg-indigo-50 border border-indigo-100/80 rounded-xl p-4 shadow-sm flex gap-3 text-indigo-900">
-          <KeyRound className="h-5 w-5 text-indigo-500 shrink-0 mt-0.5" />
-          <div className="text-xs space-y-1">
-            <p className="font-bold">Seeded Test Admin Credentials:</p>
-            <p><span className="font-semibold text-indigo-700">Email:</span> admin@example.com</p>
-            <p><span className="font-semibold text-indigo-700">Password:</span> Password123!</p>
-          </div>
-        </div>
+        <Alert className="border-dashed">
+          <KeyRound className="h-4 w-4" />
+          <AlertTitle className="text-xs">Demo login</AlertTitle>
+          <AlertDescription className="text-xs">
+            <p>
+              <span className="font-semibold">Email:</span> admin@example.com
+            </p>
+            <p>
+              <span className="font-semibold">Password:</span> Password123!
+            </p>
+          </AlertDescription>
+        </Alert>
 
-        {/* Card Form */}
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200/85 p-6 sm:p-8">
-          {globalError && (
-            <div className="mb-5 bg-rose-50 border border-rose-100 rounded-xl p-3.5 text-xs text-rose-700 font-medium">
-              {globalError}
-            </div>
-          )}
+        <Card>
+          <CardHeader>
+            <CardTitle>Sign in</CardTitle>
+            <CardDescription>Use your admin credentials to continue.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {globalError && (
+              <Alert variant="destructive" className="mb-5">
+                <AlertDescription>{globalError}</AlertDescription>
+              </Alert>
+            )}
 
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
-            {/* Email Field */}
-            <div>
-              <label htmlFor="email" className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Email Address
-              </label>
-              <input
-                id="email"
-                type="email"
-                autoComplete="email"
-                placeholder="admin@example.com"
-                className={`w-full px-3.5 py-2 rounded-lg border text-sm transition-all focus:outline-none focus:ring-2 focus:ring-indigo-500/20 ${
-                  errors.email 
-                    ? "border-rose-400 focus:border-rose-500 focus:ring-rose-500/10" 
-                    : "border-slate-300 focus:border-indigo-600"
-                }`}
-                {...register("email")}
-              />
-              {errors.email && (
-                <p className="text-rose-500 text-[11px] font-medium mt-1">{errors.email.message}</p>
-              )}
-            </div>
-
-            {/* Password Field */}
-            <div>
-              <label htmlFor="password" className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Password
-              </label>
-              <div className="relative">
-                <input
-                  id="password"
-                  type={showPassword ? "text" : "password"}
-                  placeholder="••••••••"
-                  className={`w-full pl-3.5 pr-10 py-2 rounded-lg border text-sm transition-all focus:outline-none focus:ring-2 focus:ring-indigo-500/20 ${
-                    errors.password 
-                      ? "border-rose-400 focus:border-rose-500 focus:ring-rose-500/10" 
-                      : "border-slate-300 focus:border-indigo-600"
-                  }`}
-                  {...register("password")}
+            <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+              <FormField label="Email address" htmlFor="email" error={errors.email?.message} required>
+                <Input
+                  id="email"
+                  type="email"
+                  autoComplete="email"
+                  placeholder="admin@example.com"
+                  aria-invalid={!!errors.email}
+                  {...register("email")}
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-600 focus:outline-none"
-                >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
-              {errors.password && (
-                <p className="text-rose-500 text-[11px] font-medium mt-1">{errors.password.message}</p>
-              )}
-            </div>
+              </FormField>
 
-            {/* Submit Button */}
-            <button
-              id="submit-signin"
-              type="submit"
-              disabled={isSubmitting}
-              className="w-full bg-slate-900 hover:bg-slate-800 text-white font-semibold py-2.5 rounded-lg text-sm transition-all cursor-pointer shadow-sm disabled:opacity-75 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {isSubmitting ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Verifying session...
-                </>
-              ) : (
-                "Sign In"
-              )}
-            </button>
-          </form>
+              <FormField label="Password" htmlFor="password" error={errors.password?.message} required>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-end">
+                    <Link to="/forgot-password" className="text-xs font-medium text-primary hover:underline">
+                      Forgot password?
+                    </Link>
+                  </div>
+                  <div className="relative">
+                    <Input
+                      id="password"
+                      type={showPassword ? "text" : "password"}
+                      placeholder="••••••••"
+                      className="pr-10"
+                      aria-invalid={!!errors.password}
+                      {...register("password")}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
+                      onClick={() => setShowPassword(!showPassword)}
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                  </div>
+                </div>
+              </FormField>
 
-          {/* Prompt Sign-Up Link */}
-          <div className="mt-6 text-center text-xs text-slate-500">
+              <Button id="submit-signin" type="submit" className="w-full" disabled={isSubmitting}>
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Signing in…
+                  </>
+                ) : (
+                  "Sign In"
+                )}
+              </Button>
+            </form>
+          </CardContent>
+          <CardFooter className="justify-center text-xs text-muted-foreground">
             Account needed?{" "}
-            <Link to="/sign-up" className="text-indigo-600 hover:text-indigo-700 font-semibold underline">
-              Create an admin account
+            <Link to="/sign-up" className="ml-1 font-medium text-primary hover:underline">
+              Create an account
             </Link>
-          </div>
-        </div>
+          </CardFooter>
+        </Card>
       </div>
     </div>
   );

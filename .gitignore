@@ -113,6 +113,9 @@ dist
 # Docusaurus cache and generated files
 .docusaurus
 
+# Local dev email captures (file-db mode)
+data/emails/
+
 # Serverless directories
 .serverless/
 

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useForm } from "react-hook-form";
+import { useForm, FormProvider } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
   updateProfileSchema,
@@ -18,6 +18,12 @@ import {
   useRevokeSession,
   useDeactivateAccount,
 } from "../hooks/useAccount";
+import { useTheme } from "next-themes";
+import type { ThemePreference, UpdateProfilePayload } from "../types";
+import { FormField } from "../components/forms/FormField";
+import { PhoneInput } from "../components/forms/PhoneInput";
+import { PasswordStrength } from "../components/forms/PasswordStrength";
+import { omitPhoneUiFields, parseE164 } from "../lib/validation";
 import {
   User,
   Shield,
@@ -39,6 +45,7 @@ const tabs: { id: Tab; label: string; icon: typeof User }[] = [
 ];
 
 export default function AccountSettingsPage() {
+  const { setTheme } = useTheme();
   const [tab, setTab] = useState<Tab>("profile");
   const { user, refreshUser, signOut } = useAuth();
   const navigate = useNavigate();
@@ -51,16 +58,21 @@ export default function AccountSettingsPage() {
   const revokeSession = useRevokeSession();
   const deactivate = useDeactivateAccount();
 
+  const phoneParts = parseE164(user?.phone);
+
   const profileForm = useForm({
     resolver: zodResolver(updateProfileSchema),
+    mode: "onChange",
     values: {
       fullName: user?.fullName || "",
+      phoneDial: phoneParts.dial,
+      phoneNational: phoneParts.national,
       phone: user?.phone || "",
       jobTitle: user?.jobTitle || "",
       department: user?.department || "",
       bio: user?.bio || "",
-      timezone: user?.timezone || "UTC",
-      locale: user?.locale || "en-US",
+      timezone: user?.timezone || "Europe/London",
+      locale: user?.locale || "en-GB",
     },
   });
 
@@ -85,8 +97,8 @@ export default function AccountSettingsPage() {
   return (
     <div className="space-y-6 max-w-4xl">
       <div>
-        <h1 className="text-2xl font-bold text-slate-900">Account Settings</h1>
-        <p className="text-sm text-slate-500 mt-1">Manage your profile, security, notifications, and active sessions.</p>
+        <h1 className="text-2xl font-bold text-app-heading">Account Settings</h1>
+        <p className="text-sm app-muted mt-1">Manage your profile, security, notifications, and active sessions.</p>
       </div>
 
       <div className="flex flex-col md:flex-row gap-6">
@@ -97,7 +109,7 @@ export default function AccountSettingsPage() {
               type="button"
               onClick={() => setTab(id)}
               className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors cursor-pointer ${
-                tab === id ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"
+                tab === id ? "app-nav-settings-active" : "app-muted hover:bg-[var(--app-hover)]"
               }`}
             >
               <Icon className="h-4 w-4" />
@@ -106,25 +118,27 @@ export default function AccountSettingsPage() {
           ))}
         </nav>
 
-        <div className="flex-1 bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+        <div className="flex-1 app-card p-6">
           {tab === "profile" && (
+            <FormProvider {...profileForm}>
             <form
               className="space-y-4"
               onSubmit={profileForm.handleSubmit((data) =>
-                updateProfile.mutate(data, { onSuccess: () => refreshUser() })
+                updateProfile.mutate(omitPhoneUiFields(data) as UpdateProfilePayload, { onSuccess: () => refreshUser() })
               )}
+              noValidate
             >
-              <div className="flex items-center gap-4 pb-4 border-b border-slate-100">
-                <div className="h-16 w-16 rounded-full bg-slate-100 overflow-hidden border border-slate-200">
+              <div className="flex items-center gap-4 pb-4 app-divider">
+                <div className="h-16 w-16 rounded-full overflow-hidden app-media-border">
                   {user.avatarUrl ? (
                     <img src={user.avatarUrl} alt="" className="h-full w-full object-cover" />
                   ) : (
-                    <div className="h-full w-full flex items-center justify-center text-xl font-bold text-indigo-600">
+                    <div className="h-full w-full app-avatar text-xl">
                       {user.fullName.charAt(0)}
                     </div>
                   )}
                 </div>
-                <label className="inline-flex items-center gap-2 px-3 py-2 border border-slate-300 rounded-lg text-xs font-semibold cursor-pointer hover:bg-slate-50">
+                <label className="inline-flex items-center gap-2 px-3 py-2 border border-[var(--app-border-strong)] rounded-lg text-xs font-semibold cursor-pointer hover:bg-[var(--app-hover)]">
                   <Upload className="h-3.5 w-3.5" />
                   Upload avatar
                   <input
@@ -139,30 +153,46 @@ export default function AccountSettingsPage() {
                 </label>
               </div>
 
-              {[
-                ["fullName", "Full name"],
-                ["phone", "Phone"],
-                ["jobTitle", "Job title"],
-                ["department", "Department"],
-                ["timezone", "Timezone"],
-                ["locale", "Locale"],
-              ].map(([name, label]) => (
-                <div key={name}>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">{label}</label>
-                  <input
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
-                    {...profileForm.register(name as keyof typeof profileForm.formState.defaultValues)}
-                  />
-                </div>
-              ))}
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Bio</label>
-                <textarea rows={3} className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" {...profileForm.register("bio")} />
-              </div>
-              <button type="submit" disabled={updateProfile.isPending} className="px-4 py-2 bg-slate-900 text-white text-sm font-semibold rounded-lg cursor-pointer disabled:opacity-70">
+              <FormField label="Full name" required error={profileForm.formState.errors.fullName?.message}>
+                <input
+                  className={`app-input ${profileForm.formState.errors.fullName ? "app-input-error" : ""}`}
+                  autoComplete="name"
+                  {...profileForm.register("fullName")}
+                />
+              </FormField>
+
+              <FormField
+                label="Phone"
+                error={profileForm.formState.errors.phoneNational?.message || profileForm.formState.errors.phone?.message}
+              >
+                <PhoneInput name="phone" dialField="phoneDial" nationalField="phoneNational" />
+              </FormField>
+
+              <FormField label="Job title">
+                <input className="app-input" autoComplete="organization-title" {...profileForm.register("jobTitle")} />
+              </FormField>
+
+              <FormField label="Department">
+                <input className="app-input" {...profileForm.register("department")} />
+              </FormField>
+
+              <FormField label="Time zone">
+                <select className="app-input" {...profileForm.register("timezone")}>
+                  <option value="Europe/London">United Kingdom (London)</option>
+                  <option value="Europe/Dublin">Ireland (Dublin)</option>
+                  <option value="Europe/Edinburgh">Scotland (Edinburgh)</option>
+                </select>
+              </FormField>
+
+              <FormField label="Bio" error={profileForm.formState.errors.bio?.message}>
+                <textarea rows={3} className="app-textarea" maxLength={500} {...profileForm.register("bio")} />
+              </FormField>
+
+              <button type="submit" disabled={updateProfile.isPending} className="app-btn-primary cursor-pointer disabled:opacity-70">
                 {updateProfile.isPending ? <Loader2 className="h-4 w-4 animate-spin inline" /> : "Save profile"}
               </button>
             </form>
+            </FormProvider>
           )}
 
           {tab === "security" && (
@@ -173,27 +203,34 @@ export default function AccountSettingsPage() {
                   changePassword.mutate(data, { onSuccess: () => passwordForm.reset() })
                 )}
               >
-                <h2 className="font-bold text-sm text-slate-900">Change password</h2>
+                <h2 className="font-bold text-sm app-heading">Change password</h2>
                 {(["currentPassword", "newPassword", "confirmPassword"] as const).map((field) => (
                   <div key={field}>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1 capitalize">{field.replace(/([A-Z])/g, " $1")}</label>
-                    <input type="password" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" {...passwordForm.register(field)} />
-                    {passwordForm.formState.errors[field] && (
-                      <p className="text-rose-500 text-[11px] mt-1">{passwordForm.formState.errors[field]?.message}</p>
-                    )}
+                  <FormField
+                    label={field.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase())}
+                    error={passwordForm.formState.errors[field]?.message}
+                  >
+                    <input
+                      type="password"
+                      autoComplete={field === "currentPassword" ? "current-password" : "new-password"}
+                      className={`app-input ${passwordForm.formState.errors[field] ? "app-input-error" : ""}`}
+                      {...passwordForm.register(field)}
+                    />
+                    {field === "newPassword" && <PasswordStrength password={passwordForm.watch("newPassword") ?? ""} />}
+                  </FormField>
                   </div>
                 ))}
-                <button type="submit" disabled={changePassword.isPending} className="px-4 py-2 bg-slate-900 text-white text-sm font-semibold rounded-lg cursor-pointer">
+                <button type="submit" disabled={changePassword.isPending} className="app-btn-primary cursor-pointer">
                   Update password
                 </button>
               </form>
 
-              <div className="border-t border-slate-100 pt-6">
-                <h2 className="font-bold text-sm text-rose-700 flex items-center gap-2">
+              <div className="app-divider pt-6">
+                <h2 className="font-bold text-sm flex items-center gap-2" style={{ color: "var(--app-error-fg)" }}>
                   <AlertTriangle className="h-4 w-4" />
                   Deactivate account
                 </h2>
-                <p className="text-xs text-slate-500 mt-1 mb-3">This disables sign-in and logs you out immediately.</p>
+                <p className="text-xs app-muted mt-1 mb-3">This disables sign-in and logs you out immediately.</p>
                 <button
                   type="button"
                   onClick={() =>
@@ -204,7 +241,8 @@ export default function AccountSettingsPage() {
                       },
                     })
                   }
-                  className="px-4 py-2 border border-rose-300 text-rose-700 text-sm font-semibold rounded-lg cursor-pointer hover:bg-rose-50"
+                  className="app-btn-ghost text-sm cursor-pointer"
+                  style={{ borderColor: "var(--app-error-border)", color: "var(--app-error-fg)" }}
                 >
                   Deactivate my account
                 </button>
@@ -216,12 +254,18 @@ export default function AccountSettingsPage() {
             <form
               className="space-y-4"
               onSubmit={prefsForm.handleSubmit((data) =>
-                updatePreferences.mutate(data, { onSuccess: () => refreshUser() })
+                updatePreferences.mutate(data, {
+                  onSuccess: () => {
+                    setTheme(data.theme as ThemePreference);
+                    localStorage.setItem("theme", data.theme);
+                    refreshUser();
+                  },
+                })
               )}
             >
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Theme</label>
-                <select className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" {...prefsForm.register("theme")}>
+                <label className="app-label">Theme</label>
+                <select className="app-input" {...prefsForm.register("theme")}>
                   {THEME_PREFERENCES.map((t) => (
                     <option key={t} value={t}>{t}</option>
                   ))}
@@ -233,12 +277,12 @@ export default function AccountSettingsPage() {
                 ["notifySms", "SMS notifications"],
                 ["notifyMarketing", "Marketing emails"],
               ].map(([name, label]) => (
-                <label key={name} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                <label key={name} className="flex items-center gap-2 text-sm app-heading cursor-pointer">
                   <input type="checkbox" {...prefsForm.register(name as "notifyEmail")} />
                   {label}
                 </label>
               ))}
-              <button type="submit" disabled={updatePreferences.isPending} className="px-4 py-2 bg-slate-900 text-white text-sm font-semibold rounded-lg cursor-pointer">
+              <button type="submit" disabled={updatePreferences.isPending} className="app-btn-primary cursor-pointer">
                 Save preferences
               </button>
             </form>
@@ -246,19 +290,23 @@ export default function AccountSettingsPage() {
 
           {tab === "sessions" && (
             <div className="space-y-3">
-              <p className="text-xs text-slate-500">Revoke sessions on devices you no longer use.</p>
+              <p className="text-xs app-muted">Revoke sessions on devices you no longer use.</p>
               {sessions?.map((s) => (
-                <div key={s.id} className="flex items-center justify-between border border-slate-200 rounded-lg p-3 text-xs">
+                <div key={s.id} className="flex items-center justify-between app-card-muted p-3 text-xs">
                   <div>
-                    <p className="font-semibold text-slate-800">{s.deviceLabel || "Unknown device"}</p>
-                    <p className="text-slate-500">{s.ipAddress || "IP unknown"} · Last active {new Date(s.lastActiveAt).toLocaleString()}</p>
-                    {s.isCurrent && <span className="text-emerald-600 font-semibold">Current session</span>}
+                    <p className="font-semibold app-heading">{s.deviceLabel || "Unknown device"}</p>
+                    <p className="app-muted">
+                      {s.ipAddress ? `From ${s.ipAddress}` : "Location not recorded"}
+                      {" · "}Last active {new Date(s.lastActiveAt).toLocaleString("en-GB")}
+                    </p>
+                    {s.isCurrent && <span className="app-status-pill mt-1">Current session</span>}
                   </div>
                   {!s.isCurrent && !s.revokedAt && (
                     <button
                       type="button"
                       onClick={() => revokeSession.mutate(s.id)}
-                      className="p-2 text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
+                      className="p-2 rounded-lg cursor-pointer hover:bg-[var(--app-hover)]"
+                      style={{ color: "var(--app-error-fg)" }}
                       title="Revoke session"
                     >
                       <Trash2 className="h-4 w-4" />

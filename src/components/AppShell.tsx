@@ -1,16 +1,25 @@
-import { useState, ReactNode } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
-import { 
-  Building2, 
-  Plus, 
-  LogOut, 
-  FolderIcon, 
-  Menu, 
-  X, 
+import {
+  Building2,
+  Plus,
+  LogOut,
+  FolderIcon,
+  Menu,
+  X,
   Activity,
   Settings,
+  BarChart3,
 } from "lucide-react";
+import { ThemeToggle } from "./ThemeToggle";
+
+function isNavActive(pathname: string, href: string): boolean {
+  if (href === "/orgs") {
+    return pathname === "/orgs" || (pathname.startsWith("/orgs/") && !pathname.startsWith("/orgs/new"));
+  }
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
 
 export default function AppShell({ children }: { children: ReactNode }) {
   const { user, signOut } = useAuth();
@@ -19,118 +28,128 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const navigation = [
-    { name: "Organizations", href: "/orgs", icon: FolderIcon },
-    { name: "Create Organization", href: "/orgs/new", icon: Plus },
+    { name: "Organisations", href: "/orgs", icon: FolderIcon },
+    { name: "Statistics", href: "/statistics", icon: BarChart3 },
+    { name: "Create organisation", href: "/orgs/new", icon: Plus },
     { name: "Activity Log", href: "/activity", icon: Activity },
     { name: "Account", href: "/account", icon: Settings },
   ];
+
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [location.pathname]);
 
   const handleSignOut = () => {
     signOut();
     navigate("/sign-in");
   };
 
+  const navLinkClass = (active: boolean) =>
+    `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all ${
+      active
+        ? "app-nav-tab-active shadow-sm"
+        : "text-neutral-400 hover:bg-neutral-800 hover:text-white"
+    }`;
+
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row">
-      {/* Mobile Top Bar */}
-      <header className="md:hidden bg-slate-900 text-white px-4 py-3 flex items-center justify-between shadow-md">
-        <div className="flex items-center gap-2">
-          <Building2 className="h-6 w-6 text-indigo-400" />
-          <span className="font-bold text-lg tracking-tight">Admin Dashboard</span>
+    <div className="min-h-screen app-shell-main flex flex-col md:flex-row overflow-x-hidden">
+      <header className="md:hidden sticky top-0 z-30 bg-neutral-950 text-white px-4 py-3 flex items-center justify-between border-b border-neutral-800">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="h-8 w-8 shrink-0 rounded-lg flex items-center justify-center bg-indigo-500 text-white">
+            <Building2 className="h-4 w-4" />
+          </div>
+          <span className="font-bold text-base sm:text-lg tracking-tight truncate">Follant</span>
         </div>
-        <button 
+        <button
+          type="button"
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-          className="p-1.5 hover:bg-slate-800 rounded-md focus:outline-none"
+          className="p-2 -mr-1 hover:bg-neutral-800 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 shrink-0"
+          aria-expanded={mobileMenuOpen}
+          aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
         >
-          {mobileMenuOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
+          {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
       </header>
 
-      {/* Mobile Navigation Dropdown */}
       {mobileMenuOpen && (
-        <div className="md:hidden bg-slate-900 text-white border-t border-slate-800 px-4 py-3 flex flex-col gap-2 shadow-inner">
-          <div className="py-2 border-b border-slate-800 flex items-center gap-2 px-2">
-            <div className="h-8 w-8 rounded-full bg-indigo-600 flex items-center justify-center font-bold text-sm text-white">
-              {user?.fullName?.charAt(0).toUpperCase() || "A"}
-            </div>
-            <div className="overflow-hidden">
-              <p className="text-xs font-semibold text-slate-200 truncate">{user?.fullName}</p>
-              <p className="text-[10px] text-slate-400 truncate">{user?.email}</p>
+        <div className="md:hidden fixed inset-0 z-40">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
+            aria-label="Close menu"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+          <div className="absolute top-0 left-0 right-0 max-h-[85dvh] overflow-y-auto bg-neutral-950 text-white border-b border-neutral-800 shadow-xl">
+            <div className="px-4 py-3 flex flex-col gap-1">
+              <div className="py-2 border-b border-neutral-800 flex items-center gap-2 px-1 mb-1">
+                <div className="h-9 w-9 app-avatar text-sm shrink-0">
+                  {user?.fullName?.charAt(0).toUpperCase() || "A"}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-semibold text-neutral-200 truncate">{user?.fullName}</p>
+                  <p className="text-[10px] text-neutral-500 truncate">{user?.email}</p>
+                </div>
+                <ThemeToggle compact />
+              </div>
+              {navigation.map((item) => {
+                const Icon = item.icon;
+                const active = isNavActive(location.pathname, item.href);
+                return (
+                  <Link key={item.name} to={item.href} className={navLinkClass(active)}>
+                    <Icon className="h-4 w-4 shrink-0" />
+                    <span className="truncate">{item.name}</span>
+                  </Link>
+                );
+              })}
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="flex items-center gap-3 px-3 py-2.5 mt-2 text-left rounded-lg text-sm font-medium text-red-400 hover:bg-neutral-800 transition-all border-t border-neutral-800 pt-3"
+              >
+                <LogOut className="h-4 w-4 shrink-0" />
+                Sign Out
+              </button>
             </div>
           </div>
-          {navigation.map((item) => {
-            const Icon = item.icon;
-            const active = location.pathname === item.href || location.pathname.startsWith(item.href + "/");
-            return (
-              <Link
-                key={item.name}
-                to={item.href}
-                onClick={() => setMobileMenuOpen(false)}
-                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all ${
-                  active 
-                    ? "bg-indigo-600 text-white font-medium" 
-                    : "text-slate-300 hover:bg-slate-800"
-                }`}
-              >
-                <Icon className="h-4 w-4" />
-                {item.name}
-              </Link>
-            );
-          })}
-          <button
-            onClick={handleSignOut}
-            className="flex items-center gap-3 px-3 py-2 mt-4 text-left rounded-lg text-sm font-medium text-rose-400 hover:bg-slate-800 transition-all border-t border-slate-800/50 pt-3"
-          >
-            <LogOut className="h-4 w-4" />
-            Sign Out
-          </button>
         </div>
       )}
 
-      {/* Desktop Sidebar */}
-      <aside className="hidden md:flex flex-col w-64 bg-slate-900 text-white min-h-screen shadow-lg">
-        {/* Logo Section */}
-        <div className="px-6 py-6 border-b border-slate-800 flex items-center gap-2">
-          <Building2 className="h-6 w-6 text-indigo-400" />
-          <span className="font-bold text-lg tracking-tight">Admin Dashboard</span>
+      <aside className="hidden md:flex flex-col w-64 shrink-0 bg-neutral-950 text-white min-h-screen border-r border-neutral-800">
+        <div className="px-6 py-6 border-b border-neutral-800 flex items-center gap-2.5">
+          <div className="h-9 w-9 rounded-lg flex items-center justify-center bg-indigo-500 text-white shrink-0">
+            <Building2 className="h-5 w-5" />
+          </div>
+          <span className="font-bold text-lg tracking-tight">Follant</span>
         </div>
 
-        {/* Navigation Section */}
-        <nav className="flex-1 px-4 py-6 flex flex-col gap-2">
+        <nav className="flex-1 px-4 py-6 flex flex-col gap-1.5 overflow-y-auto">
           {navigation.map((item) => {
             const Icon = item.icon;
-            const active = location.pathname === item.href || location.pathname.startsWith(item.href + "/");
+            const active = isNavActive(location.pathname, item.href);
             return (
-              <Link
-                key={item.name}
-                to={item.href}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all ${
-                  active 
-                    ? "bg-indigo-600 text-white font-medium shadow-sm" 
-                    : "text-slate-300 hover:bg-slate-800 hover:text-white"
-                }`}
-              >
-                <Icon className="h-4 w-4" />
+              <Link key={item.name} to={item.href} className={navLinkClass(active)}>
+                <Icon className="h-4 w-4 shrink-0" />
                 {item.name}
               </Link>
             );
           })}
         </nav>
 
-        {/* User Card & Sign Out footer */}
-        <div className="p-4 border-t border-slate-800 bg-slate-950/65 flex flex-col gap-3">
-          <div className="flex items-center gap-3 px-2 py-0.5">
-            <div className="h-9 w-9 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center font-bold text-sm text-white shadow-inner">
+        <div className="p-4 border-t border-neutral-800 flex flex-col gap-3">
+          <ThemeToggle compact />
+          <div className="flex items-center gap-3 px-2 py-0.5 min-w-0">
+            <div className="h-9 w-9 app-avatar text-sm shrink-0">
               {user?.fullName?.charAt(0).toUpperCase() || "A"}
             </div>
-            <div className="overflow-hidden">
-              <p className="text-xs font-semibold text-slate-100 truncate">{user?.fullName}</p>
-              <p className="text-[10px] text-slate-400 truncate">{user?.email}</p>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold text-neutral-100 truncate">{user?.fullName}</p>
+              <p className="text-[10px] text-neutral-500 truncate">{user?.email}</p>
             </div>
           </div>
           <button
+            type="button"
             onClick={handleSignOut}
-            className="flex items-center gap-2.5 px-3 py-2 text-left rounded-lg text-xs font-semibold text-rose-400 bg-slate-900 hover:bg-slate-800 transition-all cursor-pointer shadow-sm border border-slate-800/80"
+            className="flex items-center gap-2.5 px-3 py-2 text-left rounded-lg text-xs font-semibold text-red-400 hover:bg-neutral-800 transition-all cursor-pointer border border-neutral-800"
           >
             <LogOut className="h-3.5 w-3.5" />
             Sign Out
@@ -138,8 +157,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </div>
       </aside>
 
-      {/* Main Content Pane */}
-      <main className="flex-1 flex flex-col overflow-y-auto px-4 py-6 sm:px-8 sm:py-8 max-w-7xl mx-auto w-full">
+      <main className="flex-1 flex flex-col min-w-0 w-full overflow-x-hidden px-3 py-4 sm:px-6 sm:py-6 md:px-8 md:py-8 max-w-7xl md:mx-auto">
         {children}
       </main>
     </div>

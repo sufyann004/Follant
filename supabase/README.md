@@ -9,7 +9,43 @@ supabase db push
 # 002_comprehensive_saas.sql
 # 003_rbac_audit_access.sql
 # 004_access_control_finalize.sql
+# 005_security_hardening.sql
+# 006_directory_indexes.sql
+# 007_storage_pics_bucket.sql
 ```
+
+## Edge Functions (required for org create + member invite)
+
+| Function | Route | Validates | AuthZ |
+|---|---|---|---|
+| `create-organization` | `POST /functions/v1/create-organization` | Zod (mirrors `createOrgSchema`) | JWT + RLS insert (`created_by = auth.uid()`) |
+| `invite-member` | `POST /functions/v1/invite-member` | Zod (`inviteMemberSchema`) | JWT + `get_effective_permissions` → `members.invite` |
+
+Deploy after linking your project:
+
+```bash
+npx supabase login
+npx supabase link --project-ref <your-project-ref>
+npm run supabase:db:push
+npm run supabase:functions:deploy
+```
+
+Local development:
+
+```bash
+npm run supabase:start
+npm run supabase:db:push
+npm run supabase:functions:serve
+```
+
+Set client env (`.env.development`):
+
+```
+VITE_SUPABASE_URL_DEV=http://127.0.0.1:54321
+VITE_SUPABASE_ANON_KEY_DEV=<from supabase start output>
+```
+
+When Supabase env vars are set, the React app uses **Supabase Auth** and Edge Functions automatically. Without them, the app falls back to the local Express + `db.json` simulator.
 
 ## Functional requirements (FRS) mapping
 
@@ -19,9 +55,10 @@ supabase db push
 | Admin-only dashboard | `profiles.is_admin` | `ProtectedLayout` |
 | Create org (3 types + conditional fields) | `organizations`, check constraints | Create org page |
 | Invite members by email | `organization_members`, Edge Function | Org detail → Members |
+| Org directory (created by admin) | `organizations.created_by`, member count | Directory → detail |
 | Org directory + detail | `organizations`, `organization_members` | Directory / detail pages |
 | Account management | extended `profiles`, `user_sessions` | Account settings |
-| Image uploads | `uploaded_files`, Storage (optional) | Avatar, logo, banner |
+| Image uploads | `uploaded_files`, Storage bucket `Pics` | Avatar, logo, banner |
 | Activity audit trail | `activity_logs`, `activity_action_catalog`, `log_activity()` | Activity log page |
 | Access control / roles | `access_profiles`, `organization_members.role`, `access_profile_id`, `get_effective_permissions()` | Member invite/edit |
 | Platform admin sees all logs | RLS + `activity_logs_admin_view`, `is_platform_admin()` | Activity log (admin banner) |
@@ -57,9 +94,10 @@ Org owners/admins see org-scoped logs via `can_view_org_activity()`.
 
 | NFR | Implementation |
 |---|---|
-| Security — RLS on every table | All public tables have RLS; helpers `is_platform_admin`, `can_manage_organization`, etc. |
+| Security — RLS on every table | All public tables have RLS; helpers `is_platform_admin`, `can_manage_organization`, `can_invite_members`, etc. |
 | Audit integrity | Central `log_activity()` security definer; no client INSERT policy on `activity_logs` |
-| Least privilege | Role + access profile; viewer cannot invite or upload; `get_effective_permissions()` for checks |
+| Least privilege | Role + access profile; invite policy uses `can_invite_members()` (not broad manage); `get_effective_permissions()` blocks cross-user enumeration (005) |
+| Org owner bootstrap | Trigger `handle_new_organization` adds creator as active owner member |
 | Performance | Indexes on `activity_logs(user_id, created_at)`, `organization_id`, `action`, `severity` |
 | Data retention | App caps at 5000 rows in file DB; Postgres: add scheduled job as needed |
 | Type safety | Regenerate `database.types.ts` after migrations |
