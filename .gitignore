@@ -158,6 +158,7 @@ Desktop.ini
 
 # Cursor local workspace (not project source)
 .cursor/
+skill.md
 
 # Serverless directories
 .serverless/
