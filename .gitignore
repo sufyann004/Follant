@@ -72,12 +72,15 @@ web_modules/
 # Yarn Integrity file
 .yarn-integrity
 
-# dotenv environment variable files
+# dotenv environment variable files (keep *.example templates committable)
 .env
-.env.development.local
-.env.test.local
-.env.production.local
+.env.development
+.env.production
+.env.*.local
 .env.local
+!.env.example
+!.env.development.example
+!.env.production.example
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
@@ -119,6 +122,43 @@ data/emails/
 # Local file database and uploads (never commit runtime data)
 db.json
 uploads/
+data/
+
+# Vite dependency pre-bundle cache (under node_modules/.vite when present)
+.vite/
+
+# Vercel local project link
+.vercel/
+
+# Supabase CLI local state
+.supabase/
+supabase/.temp/
+supabase/.branches/
+
+# LaTeX build artifacts (docs/*.tex and optional PDF are fine to commit)
+*.aux
+*.out
+*.toc
+*.lot
+*.lof
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+
+# OS junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Cursor local workspace (not project source)
+.cursor/
+skill.md
 
 # Serverless directories
 .serverless/
