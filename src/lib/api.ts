@@ -1,10 +1,11 @@
 import { getSupabaseClient } from "./supabase";
 import { isSupabaseConfigured } from "./env";
 
-/** Returns the active access token for API calls (Supabase session or legacy file-db token). */
+/** Returns the active access token for API calls (Supabase session, or legacy file-db when Supabase is not configured). */
 export async function getAccessToken(): Promise<string | null> {
-  const supabase = getSupabaseClient();
-  if (supabase) {
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabaseClient();
+    if (!supabase) return null;
     const { data } = await supabase.auth.getSession();
     return data.session?.access_token ?? null;
   }
@@ -25,10 +26,25 @@ export function friendlyApiError(message: string): string {
   if (/supabase is not configured/i.test(m)) return "Sign-in is temporarily unavailable. Please try again later.";
   if (/^unauthorized$|^forbidden:/i.test(m)) return "You don't have permission to do that.";
   if (/conflict:/i.test(m)) return m.replace(/^conflict:\s*/i, "");
+  if (/unexpected token|not valid json/i.test(m)) {
+    return "The server returned an unexpected response. Try refreshing the page or signing in again.";
+  }
   return m;
 }
 
+export async function readJsonResponse<T>(res: Response, fallback: string): Promise<T> {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new Error(friendlyApiError(fallback));
+  }
+  return res.json() as Promise<T>;
+}
+
 export async function parseError(res: Response, fallback: string) {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new Error(friendlyApiError(fallback));
+  }
   const data = await res.json().catch(() => ({}));
   const raw = (data as { error?: string }).error || fallback;
   throw new Error(friendlyApiError(raw));

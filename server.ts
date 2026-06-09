@@ -1,5 +1,7 @@
+import "dotenv/config";
 import express from "express";
 import path from "path";
+import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
 import { db } from "./src/server/db.ts";
 import { upload, publicUploadUrl } from "./src/server/upload.ts";
@@ -7,53 +9,53 @@ import { getRequestMeta } from "./src/server/activityLog.ts";
 import {
   createOrgSchema,
   updateOrgSchema,
-  inviteMemberSchema,
+  inviteMemberRequestSchema,
   updateMemberSchema,
-  updateProfileSchema,
+  updateProfileApiSchema,
   updatePreferencesSchema,
   changePasswordSchema,
   ACTIVITY_ACTIONS,
 } from "./src/types.ts";
+import { passwordStrengthSchema } from "./src/lib/validation.ts";
 import { sendPasswordResetEmailLocal, consumePasswordResetToken } from "./src/server/email.ts";
-
-interface TokenPayload {
-  id: string;
-  email: string;
-  fullName: string;
-  sessionId: string;
-  exp: number;
-}
+import {
+  assertProductionSecurityConfig,
+  createSessionToken,
+  verifySessionToken,
+  securityHeaders,
+  rateLimit,
+  safeUploadHeaders,
+  type SessionTokenPayload,
+} from "./src/server/security.ts";
+import { isSupabaseOnlyMode } from "./src/server/supabase-mode.ts";
 
 async function startServer() {
+  assertProductionSecurityConfig();
+
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
+  const supabaseOnly = isSupabaseOnlyMode();
 
+  app.set("trust proxy", 1);
+  app.disable("x-powered-by");
+  app.use(securityHeaders);
   app.use(express.json({ limit: "2mb" }));
-  app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+  app.use("/uploads", safeUploadHeaders, express.static(path.join(process.cwd(), "uploads")));
 
-  function generateToken(user: { id: string; email: string; fullName: string }, sessionId: string) {
-    const payload: TokenPayload = {
-      id: user.id,
-      email: user.email,
-      fullName: user.fullName,
-      sessionId,
-      exp: Date.now() + 24 * 60 * 60 * 1000,
-    };
-    return Buffer.from(JSON.stringify(payload)).toString("base64");
-  }
-
-  function getAuthenticatedUser(req: express.Request): TokenPayload | null {
+  function getAuthenticatedUser(req: express.Request): SessionTokenPayload | null {
     const authHeader = req.headers.authorization;
     if (!authHeader?.startsWith("Bearer ")) return null;
-    try {
-      const payload = JSON.parse(Buffer.from(authHeader.split(" ")[1], "base64").toString("utf-8")) as TokenPayload;
-      if (payload.exp < Date.now()) return null;
-      db.touchSession(payload.sessionId);
-      return payload;
-    } catch {
-      return null;
-    }
+    const payload = verifySessionToken(authHeader.slice(7));
+    if (!payload) return null;
+    db.touchSession(payload.sessionId);
+    return payload;
   }
+
+  const authRateLimit = rateLimit({
+    keyPrefix: "auth",
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+  });
 
   function activityCtx(req: express.Request, userId: string, organizationId?: string | null) {
     const meta = getRequestMeta(req);
@@ -78,9 +80,12 @@ async function startServer() {
     return user;
   }
 
+  if (supabaseOnly) {
+    console.log("[SERVER] Supabase-only mode — legacy /api routes disabled");
+  } else {
   // ─── Auth ───────────────────────────────────────────────────────────────────
 
-  app.post("/api/auth/sign-in", (req, res) => {
+  app.post("/api/auth/sign-in", authRateLimit, (req, res) => {
     try {
       const { email, password } = req.body;
       if (!email || !password) return res.status(400).json({ error: "Email and password are required" });
@@ -88,29 +93,74 @@ async function startServer() {
       if (!user || !db.hashCompare(password, user.passwordHash)) {
         return res.status(401).json({ error: "Invalid email or password" });
       }
+      db.upgradePasswordHashIfNeeded(user.id, password);
       const meta = getRequestMeta(req);
       const session = db.createSession(user.id, meta);
+      db.activatePendingInvites(user.id, user.email, activityCtx(req, user.id));
       db.recordSignIn(user.id, activityCtx(req, user.id), session.id);
       const { passwordHash, ...profile } = user;
-      return res.json({ user: profile, token: generateToken(user, session.id) });
+      return res.json({ user: profile, token: createSessionToken(user, session.id) });
     } catch (err) {
       return res.status(500).json({ error: err instanceof Error ? err.message : "Sign in failed" });
     }
   });
 
-  app.post("/api/auth/sign-up", (req, res) => {
+  app.post("/api/auth/sign-up", (_req, res) => {
+    return res.status(403).json({
+      error: "Access is by invitation only. Use the link in your invitation email to set up your account.",
+    });
+  });
+
+  app.get("/api/invites/preview", authRateLimit, (req, res) => {
+    const orgId = typeof req.query.orgId === "string" ? req.query.orgId : typeof req.query.org === "string" ? req.query.org : "";
+    const email = typeof req.query.email === "string" ? req.query.email.trim() : "";
+    if (!orgId || !email) {
+      return res.status(400).json({ error: "Organisation and email are required" });
+    }
+    const preview = db.getInvitePreview(orgId, email);
+    if (!preview) {
+      return res.status(404).json({ error: "This invitation link is invalid or has expired" });
+    }
+    return res.json(preview);
+  });
+
+  app.post("/api/auth/accept-invite", authRateLimit, (req, res) => {
     try {
-      const { email, password, fullName, phone, jobTitle, timezone } = req.body;
-      if (!email || !password || !fullName) return res.status(400).json({ error: "All fields are required" });
-      if (password.length < 8) return res.status(400).json({ error: "Password must be at least 8 characters" });
-      const profile = db.createUser(email, password, fullName, { phone, jobTitle, timezone }, activityCtx(req, "system"));
+      const { orgId, email, password, fullName, phone, jobTitle, timezone } = req.body ?? {};
+      if (!orgId || !email || !password || !fullName) {
+        return res.status(400).json({ error: "Invitation details and account fields are required" });
+      }
+      if (typeof password !== "string") {
+        return res.status(400).json({ error: "Password is required" });
+      }
+      const passwordCheck = passwordStrengthSchema.safeParse(password);
+      if (!passwordCheck.success) {
+        return res.status(400).json({ error: passwordCheck.error.issues[0]?.message ?? "Invalid password" });
+      }
+      const { user: profile } = db.acceptInviteRegistration(
+        String(orgId),
+        String(email),
+        String(password),
+        String(fullName),
+        {
+          phone: typeof phone === "string" ? phone : undefined,
+          jobTitle: typeof jobTitle === "string" ? jobTitle : undefined,
+          timezone: typeof timezone === "string" ? timezone : undefined,
+        },
+        activityCtx(req, "system"),
+      );
       const meta = getRequestMeta(req);
       const session = db.createSession(profile.id, meta);
       db.recordSignIn(profile.id, activityCtx(req, profile.id), session.id);
-      return res.status(201).json({ user: profile, token: generateToken({ ...profile, fullName: profile.fullName }, session.id) });
+      return res.status(201).json({
+        user: profile,
+        token: createSessionToken({ ...profile, fullName: profile.fullName }, session.id),
+        orgId: String(orgId),
+      });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Registration failed";
-      return res.status(msg.includes("exists") ? 409 : 500).json({ error: msg });
+      const msg = err instanceof Error ? err.message : "Could not accept invitation";
+      const status = msg.includes("already exists") ? 409 : msg.includes("no longer valid") ? 404 : 400;
+      return res.status(status).json({ error: msg });
     }
   });
 
@@ -130,7 +180,7 @@ async function startServer() {
     return res.json({ user: profile });
   });
 
-  app.post("/api/auth/forgot-password", (req, res) => {
+  app.post("/api/auth/forgot-password", authRateLimit, (req, res) => {
     try {
       const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
       if (!email) return res.status(400).json({ error: "Email is required" });
@@ -144,12 +194,16 @@ async function startServer() {
     }
   });
 
-  app.post("/api/auth/reset-password", (req, res) => {
+  app.post("/api/auth/reset-password", authRateLimit, (req, res) => {
     try {
       const { token, password } = req.body ?? {};
       if (!token || !password) return res.status(400).json({ error: "Token and password are required" });
-      if (typeof password !== "string" || password.length < 8) {
-        return res.status(400).json({ error: "Password must be at least 8 characters" });
+      if (typeof password !== "string") {
+        return res.status(400).json({ error: "Password is required" });
+      }
+      const passwordCheck = passwordStrengthSchema.safeParse(password);
+      if (!passwordCheck.success) {
+        return res.status(400).json({ error: passwordCheck.error.issues[0]?.message ?? "Invalid password" });
       }
       const entry = consumePasswordResetToken(String(token));
       if (!entry) return res.status(400).json({ error: "Invalid or expired reset link" });
@@ -171,7 +225,7 @@ async function startServer() {
   app.patch("/api/account/profile", (req, res) => {
     const user = requireAuth(req, res);
     if (!user) return;
-    const parsed = updateProfileSchema.safeParse(req.body);
+    const parsed = updateProfileApiSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
     try {
       const profile = db.updateProfile(user.id, parsed.data, activityCtx(req, user.id));
@@ -259,6 +313,17 @@ async function startServer() {
     return res.json({ user: profile, url });
   });
 
+  app.delete("/api/account/avatar", (req, res) => {
+    const user = requireAuth(req, res);
+    if (!user) return;
+    try {
+      const profile = db.clearAvatarUrl(user.id, activityCtx(req, user.id));
+      return res.json({ user: profile });
+    } catch (err) {
+      return res.status(400).json({ error: err instanceof Error ? err.message : "Could not remove avatar" });
+    }
+  });
+
   // ─── Activity logs ──────────────────────────────────────────────────────────
 
   app.get("/api/activity", (req, res) => {
@@ -303,7 +368,7 @@ async function startServer() {
   app.get("/api/organizations", (req, res) => {
     const user = requireAuth(req, res);
     if (!user) return;
-    return res.json(db.getOrganizationsByAdmin(user.id));
+    return res.json(db.getOrganizationsForUser(user.id));
   });
 
   app.get("/api/organizations/:id", (req, res) => {
@@ -423,6 +488,28 @@ async function startServer() {
     }
   });
 
+  app.delete("/api/organizations/:id/logo", (req, res) => {
+    const user = requireAuth(req, res);
+    if (!user) return;
+    try {
+      const org = db.clearOrganizationImage(req.params.id, user.id, "logoUrl", activityCtx(req, user.id, req.params.id));
+      return res.json({ organization: org });
+    } catch (err) {
+      return res.status(403).json({ error: err instanceof Error ? err.message : "Could not remove logo" });
+    }
+  });
+
+  app.delete("/api/organizations/:id/banner", (req, res) => {
+    const user = requireAuth(req, res);
+    if (!user) return;
+    try {
+      const org = db.clearOrganizationImage(req.params.id, user.id, "bannerUrl", activityCtx(req, user.id, req.params.id));
+      return res.json({ organization: org });
+    } catch (err) {
+      return res.status(403).json({ error: err instanceof Error ? err.message : "Could not remove banner" });
+    }
+  });
+
   // ─── Edge function simulations ──────────────────────────────────────────────
 
   app.post("/api/functions/create-organization", (req, res) => {
@@ -443,36 +530,57 @@ async function startServer() {
   app.post("/api/functions/invite-member", (req, res) => {
     const user = requireAuth(req, res);
     if (!user) return;
-    const { orgId, ...rest } = req.body;
-    if (!orgId) return res.status(400).json({ error: "Organization ID is required" });
-    const parsed = inviteMemberSchema.safeParse(rest);
+    const parsed = inviteMemberRequestSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
+    const { orgId, ...memberData } = parsed.data;
     try {
       const member = db.inviteMember(
         user.id,
         orgId,
-        parsed.data.email,
-        parsed.data.role,
+        memberData.email,
+        memberData.role,
         {
-          title: parsed.data.title,
-          department: parsed.data.department,
-          phone: parsed.data.phone,
-          inviteMessage: parsed.data.inviteMessage,
-          accessProfileId: parsed.data.accessProfileId || undefined,
+          title: memberData.title,
+          department: memberData.department,
+          phone: memberData.phone,
+          inviteMessage: memberData.inviteMessage,
+          accessProfileId: memberData.accessProfileId || undefined,
         },
         activityCtx(req, user.id, orgId)
       );
       return res.status(201).json(member);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Invite failed";
-      const status = msg.includes("Conflict") ? 409 : msg.includes("Unauthorized") || msg.includes("RLS") ? 403 : 400;
+      const status = msg.includes("already been invited")
+        ? 409
+        : msg.includes("permission")
+          ? 403
+          : 400;
       return res.status(status).json({ error: msg });
     }
   });
 
+  // Unmatched /api routes must return JSON — never fall through to the SPA (HTML breaks fetch().json()).
+  app.use("/api", (_req, res) => {
+    res.status(404).json({ error: "Not found" });
+  });
+  }
+
+  if (supabaseOnly) {
+    app.use("/api", (_req, res) => {
+      res.status(503).json({
+        error: "Legacy API is disabled. Sign in with your Supabase account.",
+      });
+    });
+  }
+
   // ─── Static / Vite ──────────────────────────────────────────────────────────
 
-  if (process.env.NODE_ENV !== "production") {
+  const isBundledServer =
+    process.env.NODE_ENV === "production" ||
+    fileURLToPath(import.meta.url).endsWith(`${path.sep}server.cjs`);
+
+  if (!isBundledServer) {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
   } else {

@@ -3,6 +3,7 @@ import {
   emailField,
   optionalEmailField,
   optionalPhoneField,
+  optionalStringField,
   optionalUrlField,
   fullNameField,
   passwordStrengthSchema,
@@ -45,7 +46,9 @@ export const ACTIVITY_ACTIONS = [
   "org.status_change",
   "org.logo_upload",
   "org.banner_upload",
+  "org.delete",
   "member.invite",
+  "member.accept",
   "member.update",
   "member.remove",
   "file.upload",
@@ -75,11 +78,39 @@ export const ORG_STATUS_LABELS: Record<OrgStatus, string> = {
 };
 
 export const MEMBER_STATUS_LABELS: Record<MemberStatus, string> = {
-  invited: "Invited",
-  active: "Active",
+  invited: "Invitation pending",
+  active: "Active member",
   suspended: "Suspended",
   removed: "Removed",
 };
+
+/** Plain-language member status for lists and detail panels. */
+export function getMemberStatusLabel(
+  member: Pick<OrganizationMember, "status" | "joinedAt" | "userId">,
+  orgCreatedBy?: string | null,
+): string {
+  if (member.status === "invited") return "Invitation pending";
+  if (member.status === "suspended") return MEMBER_STATUS_LABELS.suspended;
+  if (member.status === "removed") return MEMBER_STATUS_LABELS.removed;
+  if (member.status === "active") {
+    if (orgCreatedBy && member.userId === orgCreatedBy) return "Organisation owner";
+    if (member.joinedAt) return "Invitation accepted";
+    return MEMBER_STATUS_LABELS.active;
+  }
+  return MEMBER_STATUS_LABELS[member.status] ?? member.status;
+}
+
+export interface InvitePreview {
+  orgId: string;
+  orgName: string;
+  email: string;
+  role: MemberRole;
+  title?: string | null;
+  memberStatus: MemberStatus;
+  accountExists: boolean;
+  canRegister: boolean;
+  canAcceptWhileSignedIn: boolean;
+}
 
 export const ACTIVITY_SEVERITIES = ["info", "notice", "warning", "critical"] as const;
 export type ActivitySeverity = (typeof ACTIVITY_SEVERITIES)[number];
@@ -111,7 +142,9 @@ export const ACTIVITY_ACTION_CATALOG: Record<
   "org.status_change": { label: "Status changed", category: "Organisations", severity: "warning", hint: "Organisation status updated" },
   "org.logo_upload": { label: "Logo uploaded", category: "Organisations", severity: "info", hint: "Organisation logo updated" },
   "org.banner_upload": { label: "Banner uploaded", category: "Organisations", severity: "info", hint: "Organisation banner updated" },
+  "org.delete": { label: "Organisation deleted", category: "Organisations", severity: "critical", hint: "Organisation permanently removed" },
   "member.invite": { label: "Member invited", category: "Members", severity: "notice", hint: "Invitation sent" },
+  "member.accept": { label: "Invitation accepted", category: "Members", severity: "notice", hint: "Member joined the organisation" },
   "member.update": { label: "Member updated", category: "Members", severity: "info", hint: "Member role or access changed" },
   "member.remove": { label: "Member removed", category: "Members", severity: "warning", hint: "Member removed from org" },
   "file.upload": { label: "File uploaded", category: "Files", severity: "info", hint: "File or image uploaded" },
@@ -159,7 +192,8 @@ export const signInSchema = z.object({
   password: z.string().min(1, "Password is required"),
 });
 
-export const signUpSchema = z
+/** Account setup for invited members only (org id comes from the invitation link). */
+export const acceptInviteSchema = z
   .object({
     email: emailField,
     password: passwordStrengthSchema,
@@ -232,6 +266,17 @@ export const updateProfileSchema = z
       });
     }
   });
+
+/** Profile fields sent to the API (no phoneDial / phoneNational UI helpers). */
+export const updateProfileApiSchema = z.object({
+  fullName: fullNameField,
+  phone: optionalPhoneField,
+  jobTitle: z.string().trim().max(80).optional().or(z.literal("")),
+  department: z.string().trim().max(80).optional().or(z.literal("")),
+  bio: z.string().max(500, "Bio must be 500 characters or less").optional().or(z.literal("")),
+  timezone: z.string().optional(),
+  locale: z.string().optional(),
+});
 
 export const updatePreferencesSchema = z.object({
   theme: z.enum(THEME_PREFERENCES),
@@ -348,21 +393,29 @@ export const updateOrgSchema = z
     applyOrgContactValidation(data as Record<string, unknown>, ctx);
   });
 
-export const inviteMemberSchema = z
-  .object({
-    email: emailField,
-    role: z.enum(MEMBER_ROLES).default("member"),
-    accessProfileId: z
+export const inviteMemberPayloadSchema = z.object({
+  email: emailField,
+  role: z.enum(MEMBER_ROLES).default("member"),
+  accessProfileId: z.preprocess(
+    (v) => (v == null ? "" : v),
+    z
       .string()
-      .optional()
-      .or(z.literal(""))
       .refine((v) => v === "" || z.string().uuid().safeParse(v).success, "Choose a valid permission level"),
-    title: z.string().trim().max(80).optional().or(z.literal("")),
-    department: z.string().trim().max(80).optional().or(z.literal("")),
+  ),
+  title: optionalStringField(80),
+  department: optionalStringField(80),
+  phone: optionalPhoneField,
+  inviteMessage: optionalStringField(500),
+});
+
+export const inviteMemberRequestSchema = inviteMemberPayloadSchema.extend({
+  orgId: z.string().uuid("Organisation ID is required"),
+});
+
+export const inviteMemberSchema = inviteMemberPayloadSchema
+  .extend({
     phoneDial: z.string().min(1),
     phoneNational: z.string().optional().or(z.literal("")),
-    phone: optionalPhoneField,
-    inviteMessage: z.string().max(500).optional().or(z.literal("")),
   })
   .superRefine((data, ctx) => {
     const national = (data.phoneNational ?? "").replace(/\D/g, "");
@@ -387,7 +440,7 @@ export const updateMemberSchema = z.object({
     .string()
     .optional()
     .or(z.literal(""))
-    .refine((v) => v === "" || z.string().uuid().safeParse(v).success, "Choose a valid permission level"),
+    .refine((v) => !v || v === "" || z.string().uuid().safeParse(v).success, "Choose a valid permission level"),
 });
 
 // ─── Domain types ────────────────────────────────────────────────────────────
@@ -470,6 +523,8 @@ export interface OrganizationMember {
   phone?: string | null;
   inviteMessage?: string | null;
   invitedBy?: string | null;
+  invitedByName?: string | null;
+  invitedByEmail?: string | null;
   permissions: Record<string, unknown>;
   accessProfileId?: string | null;
   invitedAt: string;
@@ -477,6 +532,9 @@ export interface OrganizationMember {
   lastActiveAt?: string | null;
   updatedAt: string;
 }
+
+/** Invite API response — member is always persisted; email delivery is best-effort. */
+export type InviteMemberResult = OrganizationMember & { emailSent?: boolean };
 
 export interface ActivityLog {
   id: string;
@@ -531,13 +589,13 @@ export interface DashboardStats {
   activeMembers: number;
   pendingInvites: number;
   organizationsByType: Record<OrgType, number>;
-  activityLast7Days: number;
   organizationsCreatedThisMonth: number;
 }
 
 export type CreateOrgInput = z.infer<typeof createOrgSchema>;
 export type UpdateOrgInput = z.infer<typeof updateOrgSchema>;
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
+export type UpdateProfileApiInput = z.infer<typeof updateProfileApiSchema>;
 export type UpdatePreferencesInput = z.infer<typeof updatePreferencesSchema>;
 
 /** API payloads with phone UI helper fields removed */
@@ -549,11 +607,5 @@ export type UpdateOrgPayload = Omit<
   UpdateOrgInput,
   "contactPhoneDial" | "contactPhoneNational" | "phoneDial" | "phoneNational"
 >;
-export type UpdateProfilePayload = Omit<
-  UpdateProfileInput,
-  "phoneDial" | "phoneNational" | "contactPhoneDial" | "contactPhoneNational"
->;
-export type InviteMemberPayload = Omit<
-  z.infer<typeof inviteMemberSchema>,
-  "phoneDial" | "phoneNational" | "contactPhoneDial" | "contactPhoneNational"
->;
+export type UpdateProfilePayload = UpdateProfileApiInput;
+export type InviteMemberPayload = z.infer<typeof inviteMemberPayloadSchema>;

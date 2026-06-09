@@ -4,7 +4,8 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useAuth } from "../contexts/AuthContext";
 import { forgotPasswordSchema } from "../types";
-import { Building2, Loader2, Mail } from "lucide-react";
+import { FollantLogo } from "@/src/components/FollantLogo";
+import { Loader2, Mail } from "lucide-react";
 import { Button } from "@/src/components/ui/button";
 import { Input } from "@/src/components/ui/input";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/src/components/ui/card";
@@ -42,9 +43,7 @@ export default function ForgotPasswordPage() {
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <div className="w-full max-w-md space-y-6">
         <div className="flex flex-col items-center text-center">
-          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
-            <Building2 className="h-7 w-7" />
-          </div>
+          <FollantLogo className="mb-3 h-16 w-16 rounded-xl shadow-sm" />
           <h1 className="text-2xl font-bold tracking-tight">Reset password</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Enter your email and we&apos;ll send you a link to choose a new password.

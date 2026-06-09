@@ -7,6 +7,7 @@ interface EmailInputProps<T extends FieldValues> {
   placeholder?: string;
   autoComplete?: string;
   required?: boolean;
+  readOnly?: boolean;
 }
 
 export function EmailInput<T extends FieldValues>({
@@ -15,6 +16,7 @@ export function EmailInput<T extends FieldValues>({
   placeholder = "name@company.com",
   autoComplete = "email",
   required,
+  readOnly,
 }: EmailInputProps<T>) {
   const {
     register,
@@ -32,6 +34,7 @@ export function EmailInput<T extends FieldValues>({
       inputMode="email"
       autoComplete={autoComplete}
       required={required}
+      readOnly={readOnly}
       placeholder={placeholder}
       aria-invalid={error ? true : undefined}
       aria-describedby={error ? `${fieldId}-error` : undefined}

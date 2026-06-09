@@ -18,14 +18,14 @@ function appBaseUrl(): string {
 }
 
 /** Send org invitation via Supabase Auth (invite template for new users, magic link for existing). */
-export async function sendOrgInviteEmail(payload: OrgInviteEmailPayload): Promise<void> {
+export async function sendOrgInviteEmail(payload: OrgInviteEmailPayload): Promise<{ sent: boolean }> {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
 
   if (!supabaseUrl || !serviceRoleKey || !anonKey) {
     console.warn("[email] Missing Supabase env — skipping invite email to", payload.email);
-    return;
+    return { sent: false };
   }
 
   const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2");
@@ -34,7 +34,7 @@ export async function sendOrgInviteEmail(payload: OrgInviteEmailPayload): Promis
   });
 
   const appUrl = appBaseUrl();
-  const redirectTo = `${appUrl}/sign-up?org=${payload.orgId}`;
+  const redirectTo = `${appUrl}/accept-invite?org=${payload.orgId}&email=${encodeURIComponent(payload.email)}`;
   const metadata = {
     org_name: payload.orgName,
     org_id: payload.orgId,
@@ -50,7 +50,7 @@ export async function sendOrgInviteEmail(payload: OrgInviteEmailPayload): Promis
 
   if (!inviteError) {
     console.log("[email] Invite email sent to", payload.email, "for org", payload.orgName);
-    return;
+    return { sent: true };
   }
 
   const message = inviteError.message.toLowerCase();
@@ -61,7 +61,7 @@ export async function sendOrgInviteEmail(payload: OrgInviteEmailPayload): Promis
 
   if (!alreadyRegistered) {
     console.error("[email] inviteUserByEmail failed:", inviteError.message);
-    throw new Error("Failed to send invitation email");
+    return { sent: false };
   }
 
   const otpResponse = await fetch(`${supabaseUrl}/auth/v1/otp`, {
@@ -82,8 +82,9 @@ export async function sendOrgInviteEmail(payload: OrgInviteEmailPayload): Promis
   if (!otpResponse.ok) {
     const body = await otpResponse.text();
     console.error("[email] magic link fallback failed:", body);
-    throw new Error("Failed to send invitation email to existing user");
+    return { sent: false };
   }
 
   console.log("[email] Magic-link invite sent to existing user", payload.email);
+  return { sent: true };
 }

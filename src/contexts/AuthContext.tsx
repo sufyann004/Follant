@@ -8,13 +8,13 @@ import {
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type Profile } from "../types";
-import { getSupabaseClient } from "../lib/supabase";
+import { getSupabaseClient, clearSupabaseSession } from "../lib/supabase";
 import { isSupabaseConfigured } from "../lib/env";
-import { fetchProfile } from "../lib/supabase-data";
+import { fetchProfile, acceptOrganizationInvite, activatePendingInvites } from "../lib/supabase-data";
 import {
   fetchAuthMe,
   signInWithApi,
-  signUpWithApi,
+  acceptInviteWithApi,
   type AuthErrorResponse,
 } from "../lib/auth-api";
 
@@ -28,12 +28,13 @@ interface AuthContextType {
   token: string | null;
   isLoading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (
+  acceptInvite: (
+    orgId: string,
     email: string,
     password: string,
     fullName: string,
     extras?: { phone?: string; jobTitle?: string; timezone?: string },
-  ) => Promise<void>;
+  ) => Promise<string>;
   signOut: () => void;
   refreshUser: () => Promise<void>;
   requestPasswordReset: (email: string) => Promise<void>;
@@ -73,14 +74,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const loadSupabaseProfile = useCallback(async (userId: string, accessToken: string | undefined) => {
     const profile = await fetchProfile(userId);
-    if (profile) {
-      setSupabaseUser(profile);
-      setSupabaseToken(accessToken ?? null);
+    if (!profile) {
+      throw new Error("Your account profile is missing. Contact an administrator.");
     }
+    setSupabaseUser(profile);
+    setSupabaseToken(accessToken ?? null);
+    return profile;
   }, []);
 
   useEffect(() => {
     if (!supabaseMode) return;
+    localStorage.removeItem("auth_token");
 
     const supabase = getSupabaseClient();
     if (!supabase) {
@@ -88,29 +92,63 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (session?.user) {
-        try {
-          await loadSupabaseProfile(session.user.id, session.access_token);
-        } catch (err) {
-          console.error("Profile load failed", err);
-          setSupabaseUser(null);
-          setSupabaseToken(null);
-        }
-      } else {
+    let cancelled = false;
+
+    const applySession = async (userId: string, accessToken: string | undefined) => {
+      try {
+        await loadSupabaseProfile(userId, accessToken);
+      } catch (err) {
+        console.error("Profile load failed", err);
+        clearSupabaseSession();
         setSupabaseUser(null);
         setSupabaseToken(null);
       }
-      setSupabaseLoading(false);
+    };
+
+    const clearSession = () => {
+      setSupabaseUser(null);
+      setSupabaseToken(null);
+    };
+
+    void (async () => {
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        if (cancelled) return;
+        if (session?.user) {
+          await applySession(session.user.id, session.access_token);
+        } else {
+          clearSession();
+        }
+      } catch (err) {
+        console.error("Auth session init failed", err);
+        clearSupabaseSession();
+        clearSession();
+      } finally {
+        if (!cancelled) setSupabaseLoading(false);
+      }
+    })();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      // INITIAL_SESSION is handled by getSession() above.
+      if (event === "INITIAL_SESSION") return;
+
+      void (async () => {
+        if (session?.user) {
+          await applySession(session.user.id, session.access_token);
+        } else {
+          clearSession();
+        }
+      })();
     });
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) setSupabaseLoading(false);
-    });
-
-    return () => subscription.unsubscribe();
+    return () => {
+      cancelled = true;
+      subscription.unsubscribe();
+    };
   }, [supabaseMode, loadSupabaseProfile]);
 
   const user = supabaseMode ? supabaseUser : (legacySessionQuery.data?.user ?? null);
@@ -130,7 +168,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         );
       }
       if (data.user && data.session) {
-        await loadSupabaseProfile(data.user.id, data.session.access_token);
+        const profile = await loadSupabaseProfile(data.user.id, data.session.access_token);
+        if (!profile.isAdmin) {
+          clearSupabaseSession();
+          setSupabaseUser(null);
+          setSupabaseToken(null);
+          throw new Error("Admin access required. Ask a platform administrator to grant access.");
+        }
+        await activatePendingInvites();
       }
       return;
     }
@@ -140,12 +185,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await queryClient.invalidateQueries({ queryKey: LEGACY_SESSION_KEY });
   };
 
-  const signUp = async (
+  const acceptInvite = async (
+    orgId: string,
     email: string,
     password: string,
     fullName: string,
     extras?: { phone?: string; jobTitle?: string; timezone?: string },
-  ) => {
+  ): Promise<string> => {
     if (supabaseMode) {
       const supabase = getSupabaseClient();
       if (!supabase) throw new Error("Sign-in is temporarily unavailable. Please try again later.");
@@ -158,19 +204,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             phone: extras?.phone,
             job_title: extras?.jobTitle,
             timezone: extras?.timezone,
+            org_id: orgId,
           },
+          emailRedirectTo: `${window.location.origin}/orgs/${orgId}`,
         },
       });
-      if (error) throw new Error(error.message || "Registration failed");
+      if (error) throw new Error(error.message || "Could not accept invitation");
       if (data.user && data.session) {
         await loadSupabaseProfile(data.user.id, data.session.access_token);
-      } else if (data.user) {
-        throw new Error("Check your email to confirm your account, then sign in.");
+        await acceptOrganizationInvite(orgId);
+        return orgId;
       }
-      return;
+      throw new Error("Check your email to confirm your account, then sign in.");
     }
 
-    const data = await signUpWithApi({
+    const data = await acceptInviteWithApi({
+      orgId,
       email,
       password,
       fullName,
@@ -180,6 +229,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
     localStorage.setItem("auth_token", data.token);
     await queryClient.invalidateQueries({ queryKey: LEGACY_SESSION_KEY });
+    return data.orgId;
   };
 
   const refreshUser = async () => {
@@ -198,10 +248,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await queryClient.invalidateQueries({ queryKey: LEGACY_SESSION_KEY });
   };
 
-  const signOut = () => {
+  const signOut = useCallback(() => {
     if (supabaseMode) {
-      const supabase = getSupabaseClient();
-      supabase?.auth.signOut().catch(() => {});
+      clearSupabaseSession();
       setSupabaseUser(null);
       setSupabaseToken(null);
       return;
@@ -216,7 +265,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     localStorage.removeItem("auth_token");
     queryClient.setQueryData<LegacySession | null>(LEGACY_SESSION_KEY, null);
-  };
+  }, [supabaseMode, queryClient]);
 
   const requestPasswordReset = async (email: string) => {
     if (supabaseMode) {
@@ -243,7 +292,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!supabase) throw new Error("Sign-in is temporarily unavailable. Please try again later.");
       const { error } = await supabase.auth.updateUser({ password });
       if (error) throw new Error(error.message);
-      await supabase.auth.signOut();
+      clearSupabaseSession();
+      setSupabaseUser(null);
+      setSupabaseToken(null);
       return;
     }
 
@@ -264,7 +315,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         token,
         isLoading,
         signIn,
-        signUp,
+        acceptInvite,
         signOut,
         refreshUser,
         requestPasswordReset,

@@ -66,15 +66,26 @@ export const createOrgSchema = z
     }
   });
 
+const optionalText = (max?: number) => {
+  let inner = z.string();
+  if (typeof max === "number") inner = inner.max(max);
+  return z.preprocess((v) => (v == null ? "" : v), inner.transform((s) => s.trim()));
+};
+
 export const inviteMemberSchema = z.object({
-  orgId: z.string().uuid("Invalid organization ID"),
+  orgId: z.string().uuid("Organisation ID is required"),
   email: z.string().email("Invalid email address"),
   role: z.enum(["admin", "member", "viewer"]).default("member"),
-  accessProfileId: z.string().uuid().optional().or(z.literal("")),
-  title: z.string().optional(),
-  department: z.string().optional(),
-  phone: z.string().optional(),
-  inviteMessage: z.string().max(500).optional(),
+  accessProfileId: z.preprocess(
+    (v) => (v == null ? "" : v),
+    z
+      .string()
+      .refine((v) => v === "" || z.string().uuid().safeParse(v).success, "Choose a valid permission level"),
+  ),
+  title: optionalText(80),
+  department: optionalText(80),
+  phone: optionalText(),
+  inviteMessage: optionalText(500),
 });
 
 export type CreateOrgInput = z.infer<typeof createOrgSchema>;

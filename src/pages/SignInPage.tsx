@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
-import { Link, useNavigate, useLocation } from "react-router-dom";
+import { Link, useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useAuth } from "../contexts/AuthContext";
 import { signInSchema } from "../types";
-import { Building2, Eye, EyeOff, Loader2, KeyRound } from "lucide-react";
+import { FollantLogo } from "@/src/components/FollantLogo";
+import { Eye, EyeOff, Loader2, KeyRound } from "lucide-react";
 import { Button } from "@/src/components/ui/button";
 import { Input } from "@/src/components/ui/input";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/src/components/ui/card";
@@ -18,6 +19,10 @@ export default function SignInPage() {
   const { signIn } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const inviteOrgId = searchParams.get("org") ?? searchParams.get("orgId") ?? "";
+  const prefilledEmail = searchParams.get("email") ?? "";
+
   const [showPassword, setShowPassword] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(
     (location.state as { message?: string } | null)?.message ?? null,
@@ -34,14 +39,14 @@ export default function SignInPage() {
     formState: { errors, isSubmitting },
   } = useForm<SignInFormInputs>({
     resolver: zodResolver(signInSchema),
-    defaultValues: { email: "", password: "" },
+    defaultValues: { email: prefilledEmail, password: "" },
   });
 
   const onSubmit = async (data: SignInFormInputs) => {
     setGlobalError(null);
     try {
       await signIn(data.email, data.password);
-      navigate("/orgs");
+      navigate(inviteOrgId ? `/orgs/${inviteOrgId}` : "/orgs");
     } catch (err: unknown) {
       setGlobalError(err instanceof Error ? err.message : "An unexpected sign-in error occurred.");
     }
@@ -51,30 +56,26 @@ export default function SignInPage() {
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <div className="w-full max-w-md space-y-6">
         <div className="flex flex-col items-center text-center">
-          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
-            <Building2 className="h-7 w-7" />
-          </div>
+          <FollantLogo className="mb-3 h-16 w-16 rounded-xl shadow-sm" />
           <h1 className="text-2xl font-bold tracking-tight">Follant</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Sign in to manage your organisations</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {inviteOrgId ? "Sign in to accept your invitation" : "Sign in to your organisation workspace"}
+          </p>
         </div>
 
         <Alert className="border-dashed">
           <KeyRound className="h-4 w-4" />
-          <AlertTitle className="text-xs">Demo login</AlertTitle>
+          <AlertTitle className="text-xs">Invitation-only access</AlertTitle>
           <AlertDescription className="text-xs">
-            <p>
-              <span className="font-semibold">Email:</span> admin@example.com
-            </p>
-            <p>
-              <span className="font-semibold">Password:</span> Password123!
-            </p>
+            New accounts are created only through an organisation invitation email. If you were invited, use the link
+            in that email to set up your account.
           </AlertDescription>
         </Alert>
 
         <Card>
           <CardHeader>
             <CardTitle>Sign in</CardTitle>
-            <CardDescription>Use your admin credentials to continue.</CardDescription>
+            <CardDescription>Use the email address your invitation was sent to.</CardDescription>
           </CardHeader>
           <CardContent>
             {globalError && (
@@ -89,7 +90,7 @@ export default function SignInPage() {
                   id="email"
                   type="email"
                   autoComplete="email"
-                  placeholder="admin@example.com"
+                  placeholder="name@company.com"
                   aria-invalid={!!errors.email}
                   {...register("email")}
                 />
@@ -137,11 +138,8 @@ export default function SignInPage() {
               </Button>
             </form>
           </CardContent>
-          <CardFooter className="justify-center text-xs text-muted-foreground">
-            Account needed?{" "}
-            <Link to="/sign-up" className="ml-1 font-medium text-primary hover:underline">
-              Create an account
-            </Link>
+          <CardFooter className="justify-center text-center text-xs text-muted-foreground">
+            Waiting for an invite? Ask your organisation admin to send one to your work email.
           </CardFooter>
         </Card>
       </div>

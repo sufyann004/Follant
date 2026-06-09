@@ -14,16 +14,19 @@ import {
   useUpdatePreferences,
   useChangePassword,
   useUploadAvatar,
+  useDeleteAvatar,
   useSessions,
   useRevokeSession,
   useDeactivateAccount,
 } from "../hooks/useAccount";
 import { useTheme } from "next-themes";
-import type { ThemePreference, UpdateProfilePayload } from "../types";
+import type { ThemePreference } from "../types";
 import { FormField } from "../components/forms/FormField";
 import { PhoneInput } from "../components/forms/PhoneInput";
 import { PasswordStrength } from "../components/forms/PasswordStrength";
-import { omitPhoneUiFields, parseE164 } from "../lib/validation";
+import { parseE164, toUpdateProfilePayload } from "../lib/validation";
+import { useConfirm } from "../components/ConfirmProvider";
+import { useSupabaseBackend } from "../lib/api";
 import {
   User,
   Shield,
@@ -47,6 +50,8 @@ const tabs: { id: Tab; label: string; icon: typeof User }[] = [
 export default function AccountSettingsPage() {
   const { setTheme } = useTheme();
   const [tab, setTab] = useState<Tab>("profile");
+  const supabaseBackend = useSupabaseBackend();
+  const visibleTabs = supabaseBackend ? tabs.filter((t) => t.id !== "sessions") : tabs;
   const { user, refreshUser, signOut } = useAuth();
   const navigate = useNavigate();
 
@@ -54,9 +59,11 @@ export default function AccountSettingsPage() {
   const updatePreferences = useUpdatePreferences();
   const changePassword = useChangePassword();
   const uploadAvatar = useUploadAvatar();
+  const deleteAvatar = useDeleteAvatar();
   const { data: sessions } = useSessions();
   const revokeSession = useRevokeSession();
   const deactivate = useDeactivateAccount();
+  const confirm = useConfirm();
 
   const phoneParts = parseE164(user?.phone);
 
@@ -98,12 +105,15 @@ export default function AccountSettingsPage() {
     <div className="space-y-6 max-w-4xl">
       <div>
         <h1 className="text-2xl font-bold text-app-heading">Account Settings</h1>
-        <p className="text-sm app-muted mt-1">Manage your profile, security, notifications, and active sessions.</p>
+        <p className="text-sm app-muted mt-1">
+          Manage your profile, security, and notifications
+          {!supabaseBackend ? ", and active sessions" : ""}.
+        </p>
       </div>
 
       <div className="flex flex-col md:flex-row gap-6">
         <nav className="md:w-52 shrink-0 flex md:flex-col gap-1 overflow-x-auto">
-          {tabs.map(({ id, label, icon: Icon }) => (
+          {visibleTabs.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               type="button"
@@ -124,7 +134,9 @@ export default function AccountSettingsPage() {
             <form
               className="space-y-4"
               onSubmit={profileForm.handleSubmit((data) =>
-                updateProfile.mutate(omitPhoneUiFields(data) as UpdateProfilePayload, { onSuccess: () => refreshUser() })
+                updateProfile.mutate(toUpdateProfilePayload(data), {
+                  onSuccess: () => refreshUser(),
+                })
               )}
               noValidate
             >
@@ -138,20 +150,64 @@ export default function AccountSettingsPage() {
                     </div>
                   )}
                 </div>
-                <label className="inline-flex items-center gap-2 px-3 py-2 border border-[var(--app-border-strong)] rounded-lg text-xs font-semibold cursor-pointer hover:bg-[var(--app-hover)]">
-                  <Upload className="h-3.5 w-3.5" />
-                  Upload avatar
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="sr-only"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) uploadAvatar.mutate(file, { onSuccess: () => refreshUser() });
-                    }}
-                  />
-                </label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="inline-flex items-center gap-2 px-3 py-2 border border-[var(--app-border-strong)] rounded-lg text-xs font-semibold cursor-pointer hover:bg-[var(--app-hover)]">
+                    <Upload className="h-3.5 w-3.5" />
+                    Upload avatar
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="sr-only"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          uploadAvatar.mutate(file, {
+                            onSuccess: () => refreshUser(),
+                          });
+                        }
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                  {user.avatarUrl && (
+                    <button
+                      type="button"
+                      disabled={deleteAvatar.isPending}
+                      onClick={async () => {
+                        const ok = await confirm({
+                          title: "Remove profile photo?",
+                          description: "Your avatar will be removed from your account. You can upload a new photo at any time.",
+                          confirmLabel: "Remove photo",
+                          variant: "destructive",
+                        });
+                        if (!ok) return;
+                        deleteAvatar.mutate(undefined, { onSuccess: () => refreshUser() });
+                      }}
+                      className="inline-flex items-center gap-2 px-3 py-2 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-400 rounded-lg text-xs font-semibold hover:bg-rose-50 dark:hover:bg-rose-950/40 disabled:opacity-50"
+                    >
+                      {deleteAvatar.isPending ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
+                      )}
+                      Remove photo
+                    </button>
+                  )}
+                </div>
               </div>
+
+              {uploadAvatar.isError && (
+                <div className="app-error-box text-xs">
+                  <p className="font-bold">Could not upload photo</p>
+                  <p className="mt-0.5">{uploadAvatar.error.message}</p>
+                </div>
+              )}
+              {deleteAvatar.isError && (
+                <div className="app-error-box text-xs">
+                  <p className="font-bold">Could not remove photo</p>
+                  <p className="mt-0.5">{deleteAvatar.error.message}</p>
+                </div>
+              )}
 
               <FormField label="Full name" required error={profileForm.formState.errors.fullName?.message}>
                 <input
@@ -188,6 +244,13 @@ export default function AccountSettingsPage() {
                 <textarea rows={3} className="app-textarea" maxLength={500} {...profileForm.register("bio")} />
               </FormField>
 
+              {updateProfile.isError && (
+                <div className="app-error-box text-xs">
+                  <p className="font-bold">Could not save profile</p>
+                  <p className="mt-0.5">{updateProfile.error.message}</p>
+                </div>
+              )}
+
               <button type="submit" disabled={updateProfile.isPending} className="app-btn-primary cursor-pointer disabled:opacity-70">
                 {updateProfile.isPending ? <Loader2 className="h-4 w-4 animate-spin inline" /> : "Save profile"}
               </button>
@@ -200,10 +263,18 @@ export default function AccountSettingsPage() {
               <form
                 className="space-y-4"
                 onSubmit={passwordForm.handleSubmit((data) =>
-                  changePassword.mutate(data, { onSuccess: () => passwordForm.reset() })
+                  changePassword.mutate(data, {
+                    onSuccess: () => passwordForm.reset(),
+                  })
                 )}
               >
                 <h2 className="font-bold text-sm app-heading">Change password</h2>
+                {changePassword.isError && (
+                  <div className="app-error-box text-xs">
+                    <p className="font-bold">Could not update password</p>
+                    <p className="mt-0.5">{changePassword.error.message}</p>
+                  </div>
+                )}
                 {(["currentPassword", "newPassword", "confirmPassword"] as const).map((field) => (
                   <div key={field}>
                   <FormField
@@ -220,8 +291,14 @@ export default function AccountSettingsPage() {
                   </FormField>
                   </div>
                 ))}
-                <button type="submit" disabled={changePassword.isPending} className="app-btn-primary cursor-pointer">
-                  Update password
+                <button type="submit" disabled={changePassword.isPending} className="app-btn-primary cursor-pointer disabled:opacity-70">
+                  {changePassword.isPending ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin inline" /> Updating…
+                    </>
+                  ) : (
+                    "Update password"
+                  )}
                 </button>
               </form>
 
@@ -231,16 +308,31 @@ export default function AccountSettingsPage() {
                   Deactivate account
                 </h2>
                 <p className="text-xs app-muted mt-1 mb-3">This disables sign-in and logs you out immediately.</p>
+                {deactivate.isError && (
+                  <div className="app-error-box text-xs mb-3">
+                    <p className="font-bold">Could not deactivate account</p>
+                    <p className="mt-0.5">{deactivate.error.message}</p>
+                  </div>
+                )}
                 <button
                   type="button"
-                  onClick={() =>
+                  disabled={deactivate.isPending}
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: "Deactivate your account?",
+                      description:
+                        "This disables sign-in immediately and logs you out on all devices. Contact support if you need your account restored.",
+                      confirmLabel: "Deactivate account",
+                      variant: "destructive",
+                    });
+                    if (!ok) return;
                     deactivate.mutate(undefined, {
                       onSuccess: () => {
                         signOut();
                         navigate("/sign-in");
                       },
-                    })
-                  }
+                    });
+                  }}
                   className="app-btn-ghost text-sm cursor-pointer"
                   style={{ borderColor: "var(--app-error-border)", color: "var(--app-error-fg)" }}
                 >
@@ -282,16 +374,37 @@ export default function AccountSettingsPage() {
                   {label}
                 </label>
               ))}
-              <button type="submit" disabled={updatePreferences.isPending} className="app-btn-primary cursor-pointer">
-                Save preferences
+              {updatePreferences.isError && (
+                <div className="app-error-box text-xs">
+                  <p className="font-bold">Could not save preferences</p>
+                  <p className="mt-0.5">{updatePreferences.error.message}</p>
+                </div>
+              )}
+              <button type="submit" disabled={updatePreferences.isPending} className="app-btn-primary cursor-pointer disabled:opacity-70">
+                {updatePreferences.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin inline" /> Saving…
+                  </>
+                ) : (
+                  "Save preferences"
+                )}
               </button>
             </form>
           )}
 
-          {tab === "sessions" && (
+          {tab === "sessions" && !supabaseBackend && (
             <div className="space-y-3">
               <p className="text-xs app-muted">Revoke sessions on devices you no longer use.</p>
-              {sessions?.map((s) => (
+              {revokeSession.isError && (
+                <div className="app-error-box text-xs">
+                  <p className="font-bold">Could not revoke session</p>
+                  <p className="mt-0.5">{revokeSession.error.message}</p>
+                </div>
+              )}
+              {!sessions?.length ? (
+                <p className="text-sm app-muted py-4 text-center">No other active sessions.</p>
+              ) : (
+              sessions.map((s) => (
                 <div key={s.id} className="flex items-center justify-between app-card-muted p-3 text-xs">
                   <div>
                     <p className="font-semibold app-heading">{s.deviceLabel || "Unknown device"}</p>
@@ -304,7 +417,21 @@ export default function AccountSettingsPage() {
                   {!s.isCurrent && !s.revokedAt && (
                     <button
                       type="button"
-                      onClick={() => revokeSession.mutate(s.id)}
+                      onClick={async () => {
+                        const ok = await confirm({
+                          title: "Revoke this session?",
+                          description: (
+                            <>
+                              Sign out <strong>{s.deviceLabel || "this device"}</strong>
+                              {s.ipAddress ? ` (${s.ipAddress})` : ""}. That device will need to sign in again.
+                            </>
+                          ),
+                          confirmLabel: "Revoke session",
+                          variant: "destructive",
+                        });
+                        if (!ok) return;
+                        revokeSession.mutate(s.id);
+                      }}
                       className="p-2 rounded-lg cursor-pointer hover:bg-[var(--app-hover)]"
                       style={{ color: "var(--app-error-fg)" }}
                       title="Revoke session"
@@ -313,7 +440,8 @@ export default function AccountSettingsPage() {
                     </button>
                   )}
                 </div>
-              ))}
+              ))
+              )}
             </div>
           )}
         </div>

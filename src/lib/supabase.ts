@@ -29,3 +29,13 @@ export function getSupabaseClient(): SupabaseClient | null {
 export function resetSupabaseClient(): void {
   client = null;
 }
+
+/** Clear persisted Supabase auth without calling /auth/v1/logout (avoids 403 on stale sessions). */
+export function clearSupabaseSession(): void {
+  if (typeof window === "undefined") return;
+  for (const key of Object.keys(localStorage)) {
+    if (key.startsWith("sb-") && key.endsWith("-auth-token")) {
+      localStorage.removeItem(key);
+    }
+  }
+}

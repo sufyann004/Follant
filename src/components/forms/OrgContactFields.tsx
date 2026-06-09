@@ -72,6 +72,10 @@ export function OrgContactFields() {
         <input id="addressLine1" type="text" autoComplete="street-address" className="app-input" {...register("addressLine1")} />
       </FormField>
 
+      <FormField label="Address line 2" htmlFor="addressLine2">
+        <input id="addressLine2" type="text" autoComplete="address-line2" className="app-input" {...register("addressLine2")} />
+      </FormField>
+
       <FormField label="Town or city" htmlFor="city">
         <input id="city" type="text" autoComplete="address-level2" className="app-input" {...register("city")} />
       </FormField>

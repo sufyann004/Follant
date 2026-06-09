@@ -4,7 +4,7 @@ import multer from "multer";
 import crypto from "crypto";
 import { db } from "./db";
 
-const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml"]);
+const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 const MAX_BYTES = 5 * 1024 * 1024;
 
 const storage = multer.diskStorage({
@@ -24,7 +24,7 @@ export const upload = multer({
   limits: { fileSize: MAX_BYTES },
   fileFilter(_req, file, cb) {
     if (!ALLOWED_MIME.has(file.mimetype)) {
-      cb(new Error("Only JPEG, PNG, WebP, GIF, and SVG images are allowed"));
+      cb(new Error("Only JPEG, PNG, WebP, and GIF images are allowed"));
       return;
     }
     cb(null, true);

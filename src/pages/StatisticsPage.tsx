@@ -1,7 +1,7 @@
 import { useStatistics } from "../hooks/useStatistics";
 import { QueryState } from "../components/QueryState";
 import { ORG_TYPES, ORG_TYPE_LABELS, type OrgType } from "../types";
-import { BarChart3, Building2, Users, Mail, Activity, CalendarDays } from "lucide-react";
+import { BarChart3, Building2, Users, Mail, CalendarDays } from "lucide-react";
 
 const ORG_TYPE_STAT_LABELS: Record<OrgType, string> = {
   school: `${ORG_TYPE_LABELS.school}s`,
@@ -69,7 +69,7 @@ export default function StatisticsPage() {
           Statistics
         </h1>
         <p className="text-xs sm:text-sm app-muted max-w-2xl">
-          A quick snapshot of your organisations, members, and recent activity.
+          A quick snapshot of your organisations and members.
         </p>
       </div>
 
@@ -95,13 +95,6 @@ export default function StatisticsPage() {
                 tone="emerald"
               />
               <StatCard label="Pending invites" value={data.pendingInvites} icon={Mail} tone="amber" />
-              <StatCard
-                label="Activity (7 days)"
-                value={data.activityLast7Days}
-                icon={Activity}
-                hint="Your activity this week"
-                tone="rose"
-              />
               <StatCard
                 label="New orgs this month"
                 value={data.organizationsCreatedThisMonth}

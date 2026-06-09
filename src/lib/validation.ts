@@ -86,12 +86,20 @@ export function formatNationalPhoneDisplay(national: string, dial = DEFAULT_DIAL
   return `${d.slice(0, 4)} ${d.slice(4, 7)} ${d.slice(7, 11)}${d.slice(11)}`;
 }
 
-export const optionalPhoneField = z
-  .string()
-  .optional()
-  .or(z.literal(""))
-  .transform((v) => (v ? v.replace(/[\s()-]/g, "") : ""))
-  .refine((v) => v === "" || isValidE164(v), "Enter a valid phone number (e.g. +44 7911 123456)");
+/** Optional string for API payloads — normalizes null/undefined to "" (Zod 4 safe). */
+export function optionalStringField(maxLen?: number) {
+  let inner = z.string();
+  if (typeof maxLen === "number") inner = inner.max(maxLen);
+  return z.preprocess((v) => (v == null ? "" : v), inner.transform((s) => s.trim()));
+}
+
+export const optionalPhoneField = z.preprocess(
+  (v) => (v == null ? "" : v),
+  z
+    .string()
+    .transform((v) => (v ? v.replace(/[\s()-]/g, "") : ""))
+    .refine((v) => v === "" || isValidE164(v), "Enter a valid phone number (e.g. +44 7911 123456)"),
+);
 
 export function phoneFromParts(dial: string, national: string): string {
   const e164 = toE164(dial, national);
@@ -184,6 +192,19 @@ export const passwordStrengthSchema = z
   .refine((p) => /[A-Z]/.test(p), "Include at least one uppercase letter")
   .refine((p) => /\d/.test(p), "Include at least one number");
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isUuid(value: string | null | undefined): boolean {
+  return typeof value === "string" && UUID_RE.test(value);
+}
+
+/** API payloads must use real UUIDs (Supabase). Legacy local ids like ap-org-member are dropped. */
+export function accessProfileIdForApi(value: string | null | undefined): string {
+  if (!value?.trim()) return "";
+  return isUuid(value) ? value.trim() : "";
+}
+
 export function omitPhoneUiFields<T extends Record<string, unknown>>(data: T) {
   const {
     phoneDial: _pd,
@@ -193,6 +214,54 @@ export function omitPhoneUiFields<T extends Record<string, unknown>>(data: T) {
     ...rest
   } = data;
   return rest;
+}
+
+/** Map profile form values (with dial/national parts) to the API payload. */
+export function toUpdateProfilePayload(data: {
+  fullName: string;
+  phoneDial?: string;
+  phoneNational?: string;
+  phone?: string;
+  jobTitle?: string;
+  department?: string;
+  bio?: string;
+  timezone?: string;
+  locale?: string;
+}) {
+  const phone = phoneFromParts(data.phoneDial ?? DEFAULT_DIAL, data.phoneNational ?? "");
+  return {
+    ...omitPhoneUiFields(data),
+    phone,
+  };
+}
+
+/** Map invite form values (with dial/national parts) to the API payload. */
+export function toInviteMemberPayload(
+  data: {
+    email: string;
+    role?: "admin" | "member" | "viewer";
+    phoneDial?: string;
+    phoneNational?: string;
+    phone?: string;
+    title?: string;
+    department?: string;
+    inviteMessage?: string;
+    accessProfileId?: string;
+  },
+  accessProfileIdOverride?: string,
+) {
+  const phone = phoneFromParts(data.phoneDial ?? DEFAULT_DIAL, data.phoneNational ?? "");
+  const accessProfileId =
+    accessProfileIdForApi(accessProfileIdOverride) || accessProfileIdForApi(data.accessProfileId);
+  return {
+    email: normalizeEmail(data.email),
+    role: data.role ?? "member",
+    title: (data.title ?? "").trim(),
+    department: (data.department ?? "").trim(),
+    phone,
+    inviteMessage: (data.inviteMessage ?? "").trim(),
+    accessProfileId,
+  };
 }
 
 export function passwordChecks(password: string) {

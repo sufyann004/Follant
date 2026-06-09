@@ -14,15 +14,17 @@ import type {
   ThemePreference,
   CreateOrgInput,
   UpdateOrgInput,
-  UpdateProfileInput,
+  UpdateProfilePayload,
   UpdatePreferencesInput,
   MemberRole,
   MemberStatus,
   AccessProfile,
+  InvitePreview,
 } from "../types";
 import { ACTIVITY_ACTION_CATALOG } from "../types";
 import { createActivityLog, type ActivityContext } from "./activityLog";
 import { sendOrgInviteEmailLocal, sendWelcomeEmailLocal } from "./email";
+import { hashPassword, verifyPassword, needsPasswordRehash } from "./security";
 
 const DB_PATH = path.join(process.cwd(), "db.json");
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");
@@ -41,9 +43,25 @@ interface DBStore {
   accessProfiles: AccessProfile[];
 }
 
+const ACCESS_PROFILE_IDS = {
+  platform_admin: "11111111-1111-4111-8111-111111111101",
+  org_owner: "11111111-1111-4111-8111-111111111102",
+  org_admin: "11111111-1111-4111-8111-111111111103",
+  org_member: "11111111-1111-4111-8111-111111111104",
+  org_viewer: "11111111-1111-4111-8111-111111111105",
+} as const;
+
+const LEGACY_ACCESS_PROFILE_IDS: Record<string, string> = {
+  "ap-platform-admin": ACCESS_PROFILE_IDS.platform_admin,
+  "ap-org-owner": ACCESS_PROFILE_IDS.org_owner,
+  "ap-org-admin": ACCESS_PROFILE_IDS.org_admin,
+  "ap-org-member": ACCESS_PROFILE_IDS.org_member,
+  "ap-org-viewer": ACCESS_PROFILE_IDS.org_viewer,
+};
+
 const SEED_ACCESS_PROFILES: AccessProfile[] = [
   {
-    id: "ap-platform-admin",
+    id: ACCESS_PROFILE_IDS.platform_admin,
     slug: "platform_admin",
     name: "Platform Administrator",
     description: "Full platform access. Can view all organizations and every audit log entry.",
@@ -59,7 +77,7 @@ const SEED_ACCESS_PROFILES: AccessProfile[] = [
     sortOrder: 10,
   },
   {
-    id: "ap-org-owner",
+    id: ACCESS_PROFILE_IDS.org_owner,
     slug: "org_owner",
     name: "Organization Owner",
     description: "Created the organization. Full control over members, settings, and org audit logs.",
@@ -74,7 +92,7 @@ const SEED_ACCESS_PROFILES: AccessProfile[] = [
     sortOrder: 20,
   },
   {
-    id: "ap-org-admin",
+    id: ACCESS_PROFILE_IDS.org_admin,
     slug: "org_admin",
     name: "Organization Admin",
     description: "Can manage members, update organization details, and view organization activity.",
@@ -89,7 +107,7 @@ const SEED_ACCESS_PROFILES: AccessProfile[] = [
     sortOrder: 30,
   },
   {
-    id: "ap-org-member",
+    id: ACCESS_PROFILE_IDS.org_member,
     slug: "org_member",
     name: "Member",
     description: "Standard member. Can view organization details.",
@@ -104,7 +122,7 @@ const SEED_ACCESS_PROFILES: AccessProfile[] = [
     sortOrder: 40,
   },
   {
-    id: "ap-org-viewer",
+    id: ACCESS_PROFILE_IDS.org_viewer,
     slug: "org_viewer",
     name: "Viewer",
     description: "Read-only access to organization information.",
@@ -203,7 +221,7 @@ const DEFAULT_SEED_USER = defaultProfile({
   department: "Operations",
   phone: "+447700900123",
   bio: "Default demo account for local evaluation.",
-  passwordHash: crypto.createHash("sha256").update("Password123!").digest("hex"),
+  passwordHash: hashPassword("Password123!"),
 });
 
 function baseOrg(partial: Partial<Organization> & Pick<Organization, "id" | "name" | "type" | "createdBy">): Organization {
@@ -352,7 +370,14 @@ const SEED_MEMBERS: OrganizationMember[] = [
   },
 ];
 
-function migrateStore(raw: Record<string, unknown>): DBStore {
+function remapAccessProfileId(id: string | null | undefined): string | null | undefined {
+  if (!id) return id;
+  return LEGACY_ACCESS_PROFILE_IDS[id] ?? id;
+}
+
+function migrateStore(raw: Record<string, unknown>): { store: DBStore; migrated: boolean } {
+  let migrated = false;
+
   const users = ((raw.users as UserRecord[]) || []).map((u) =>
     defaultProfile({
       ...u,
@@ -367,27 +392,42 @@ function migrateStore(raw: Record<string, unknown>): DBStore {
     baseOrg({ ...o, createdBy: o.createdBy, id: o.id, name: o.name, type: o.type })
   );
 
-  const members = ((raw.members as OrganizationMember[]) || []).map((m) => ({
-    ...m,
-    permissions: m.permissions ?? {},
-    updatedAt: m.updatedAt ?? m.invitedAt,
-  }));
+  const members = ((raw.members as OrganizationMember[]) || []).map((m) => {
+    const nextProfileId = remapAccessProfileId(m.accessProfileId);
+    if (nextProfileId !== m.accessProfileId) migrated = true;
+    return {
+      ...m,
+      accessProfileId: nextProfileId ?? m.accessProfileId,
+      permissions: m.permissions ?? {},
+      updatedAt: m.updatedAt ?? m.invitedAt,
+    };
+  });
 
-  return {
+  let accessProfiles = (raw.accessProfiles as AccessProfile[]) || SEED_ACCESS_PROFILES;
+  if (accessProfiles.some((p) => p.id.startsWith("ap-"))) {
+    accessProfiles = SEED_ACCESS_PROFILES;
+    migrated = true;
+  }
+
+  const store: DBStore = {
     users: users.length ? users : [DEFAULT_SEED_USER],
     organizations: organizations.length ? organizations : SEED_ORGS,
     members: members.length ? members : SEED_MEMBERS,
     activityLogs: (raw.activityLogs as ActivityLog[]) || [],
     uploadedFiles: (raw.uploadedFiles as UploadedFile[]) || [],
     sessions: (raw.sessions as UserSession[]) || [],
-    accessProfiles: (raw.accessProfiles as AccessProfile[]) || SEED_ACCESS_PROFILES,
+    accessProfiles,
   };
+
+  return { store, migrated };
 }
 
 function initDB(): DBStore {
   try {
     if (fs.existsSync(DB_PATH)) {
-      return migrateStore(JSON.parse(fs.readFileSync(DB_PATH, "utf-8")));
+      const { store: migratedStore, migrated } = migrateStore(JSON.parse(fs.readFileSync(DB_PATH, "utf-8")));
+      if (migrated) saveDB(migratedStore);
+      return migratedStore;
     }
   } catch (err) {
     console.error("Failed to read database, initializing fresh", err);
@@ -520,7 +560,7 @@ export const db = {
       phone: extras?.phone || null,
       jobTitle: extras?.jobTitle || null,
       timezone: extras?.timezone || "Europe/London",
-      passwordHash: crypto.createHash("sha256").update(passwordPlain).digest("hex"),
+      passwordHash: hashPassword(passwordPlain),
     });
     store.users.push(user);
     if (ctx) log({ ...ctx, userId: user.id }, "auth.sign_up", `Registered account ${email}`, { entityType: "user", entityId: user.id });
@@ -530,7 +570,15 @@ export const db = {
   },
 
   hashCompare(plain: string, hash: string) {
-    return crypto.createHash("sha256").update(plain).digest("hex") === hash;
+    return verifyPassword(plain, hash);
+  },
+
+  upgradePasswordHashIfNeeded(userId: string, plainPassword: string) {
+    const user = this.findUserById(userId);
+    if (!user || !needsPasswordRehash(user.passwordHash)) return;
+    user.passwordHash = hashPassword(plainPassword);
+    user.updatedAt = new Date().toISOString();
+    saveDB(store);
   },
 
   createSession(userId: string, meta: { ipAddress?: string | null; userAgent?: string | null }) {
@@ -596,7 +644,7 @@ export const db = {
     saveDB(store);
   },
 
-  updateProfile(userId: string, data: UpdateProfileInput, ctx: ActivityContext): Profile {
+  updateProfile(userId: string, data: UpdateProfilePayload, ctx: ActivityContext): Profile {
     const user = this.findUserById(userId);
     if (!user) throw new Error("User not found");
     Object.assign(user, {
@@ -638,7 +686,7 @@ export const db = {
     if (!user || !this.hashCompare(currentPassword, user.passwordHash)) {
       throw new Error("Current password is incorrect");
     }
-    user.passwordHash = crypto.createHash("sha256").update(newPassword).digest("hex");
+    user.passwordHash = hashPassword(newPassword);
     user.updatedAt = new Date().toISOString();
     log(ctx, "auth.password_change", "Changed account password", { entityType: "user", entityId: userId });
     saveDB(store);
@@ -647,7 +695,7 @@ export const db = {
   resetPassword(userId: string, newPassword: string, ctx: ActivityContext) {
     const user = this.findUserById(userId);
     if (!user) throw new Error("User not found");
-    user.passwordHash = crypto.createHash("sha256").update(newPassword).digest("hex");
+    user.passwordHash = hashPassword(newPassword);
     user.updatedAt = new Date().toISOString();
     log(ctx, "auth.password_change", "Reset account password via email link", {
       entityType: "user",
@@ -675,15 +723,139 @@ export const db = {
     return stripUser(user);
   },
 
-  /** Directory: orgs created by this admin (FR #4). Detail pages use canViewOrganization separately. */
-  getOrganizationsByAdmin(adminId: string) {
+  clearAvatarUrl(userId: string, ctx: ActivityContext): Profile {
+    const user = this.findUserById(userId);
+    if (!user) throw new Error("User not found");
+    if (user.avatarUrl) {
+      this.removeUploadedFileByPublicUrl(user.avatarUrl);
+    }
+    user.avatarUrl = null;
+    user.updatedAt = new Date().toISOString();
+    log(ctx, "file.delete", "Removed profile avatar", { entityType: "user", entityId: userId });
+    saveDB(store);
+    return stripUser(user);
+  },
+
+  /** Directory: orgs the user created or belongs to as an active member. */
+  getOrganizationsForUser(userId: string) {
+    const user = store.users.find((u) => u.id === userId);
+    const orgIds = new Set<string>();
+
+    if (user?.isAdmin) {
+      store.organizations.forEach((o) => orgIds.add(o.id));
+    } else {
+      store.organizations.filter((o) => o.createdBy === userId).forEach((o) => orgIds.add(o.id));
+      store.members
+        .filter((m) => m.userId === userId && m.status === "active")
+        .forEach((m) => orgIds.add(m.organizationId));
+    }
+
     return store.organizations
-      .filter((o) => o.createdBy === adminId)
+      .filter((o) => orgIds.has(o.id))
       .map((o) => ({
         ...o,
         _count_members: store.members.filter((m) => m.organizationId === o.id && m.status !== "removed").length,
       }))
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  },
+
+  getInvitePreview(orgId: string, email: string): InvitePreview | null {
+    const normalized = email.toLowerCase().trim();
+    const org = store.organizations.find((o) => o.id === orgId);
+    if (!org) return null;
+
+    const member = store.members.find(
+      (m) => m.organizationId === orgId && m.email === normalized && m.status !== "removed",
+    );
+    if (!member) return null;
+
+    const existingUser = this.findUserByEmail(normalized);
+    return {
+      orgId,
+      orgName: org.name,
+      email: normalized,
+      role: member.role,
+      title: member.title ?? null,
+      memberStatus: member.status,
+      accountExists: !!existingUser,
+      canRegister: member.status === "invited" && !existingUser,
+      canAcceptWhileSignedIn: member.status === "invited" && !!existingUser,
+    };
+  },
+
+  activatePendingInvites(userId: string, email: string, ctx?: ActivityContext): string[] {
+    const normalized = email.toLowerCase().trim();
+    const now = new Date().toISOString();
+    const activatedOrgIds: string[] = [];
+
+    for (const member of store.members) {
+      if (member.email !== normalized || member.status !== "invited") continue;
+      const org = store.organizations.find((o) => o.id === member.organizationId);
+      member.userId = userId;
+      member.status = "active";
+      member.joinedAt = now;
+      member.updatedAt = now;
+      activatedOrgIds.push(member.organizationId);
+      if (ctx) {
+        log(
+          { ...ctx, userId, organizationId: member.organizationId },
+          "member.accept",
+          `Accepted invitation to ${org?.name ?? "organisation"}`,
+          { entityType: "member", entityId: member.id, metadata: { email: normalized } },
+        );
+      }
+    }
+
+    if (activatedOrgIds.length) saveDB(store);
+    return activatedOrgIds;
+  },
+
+  acceptInviteRegistration(
+    orgId: string,
+    email: string,
+    passwordPlain: string,
+    fullName: string,
+    extras?: { phone?: string; jobTitle?: string; timezone?: string },
+    ctx?: ActivityContext,
+  ): { user: Profile; member: OrganizationMember } {
+    const normalized = email.toLowerCase().trim();
+    const preview = this.getInvitePreview(orgId, normalized);
+    if (!preview || preview.memberStatus !== "invited") {
+      throw new Error("This invitation is no longer valid");
+    }
+    if (preview.accountExists) {
+      throw new Error("An account already exists for this email. Sign in to accept the invitation.");
+    }
+
+    const member = store.members.find(
+      (m) => m.organizationId === orgId && m.email === normalized && m.status === "invited",
+    );
+    if (!member) throw new Error("This invitation is no longer valid");
+
+    const org = store.organizations.find((o) => o.id === orgId);
+    const profile = this.createUser(normalized, passwordPlain, fullName, extras, ctx);
+    const now = new Date().toISOString();
+    member.userId = profile.id;
+    member.status = "active";
+    member.joinedAt = now;
+    member.updatedAt = now;
+
+    if (ctx) {
+      log(
+        { ...ctx, userId: profile.id, organizationId: orgId },
+        "member.accept",
+        `Accepted invitation to ${org?.name ?? "organisation"}`,
+        { entityType: "member", entityId: member.id, metadata: { email: normalized } },
+      );
+    }
+
+    saveDB(store);
+    return { user: profile, member };
+  },
+
+  /** @deprecated Use getOrganizationsForUser */
+  getOrganizationsByAdmin(adminId: string) {
+    return this.getOrganizationsForUser(adminId);
   },
 
   getOrganizationById(orgId: string, adminId: string, ctx?: ActivityContext) {
@@ -778,11 +950,55 @@ export const db = {
     return org;
   },
 
+  clearOrganizationImage(
+    orgId: string,
+    adminId: string,
+    field: "logoUrl" | "bannerUrl",
+    ctx: ActivityContext
+  ) {
+    const org = store.organizations.find((o) => o.id === orgId);
+    if (!org || org.createdBy !== adminId) throw new Error("You don't have permission to change this organisation");
+    const url = org[field];
+    if (url) {
+      this.removeUploadedFileByPublicUrl(url);
+    }
+    org[field] = null;
+    org.updatedAt = new Date().toISOString();
+    log(
+      { ...ctx, organizationId: orgId },
+      "file.delete",
+      `Removed organization ${field === "logoUrl" ? "logo" : "banner"}`,
+      { entityType: "organization", entityId: orgId }
+    );
+    saveDB(store);
+    return org;
+  },
+
+  removeUploadedFileByPublicUrl(publicUrl: string) {
+    const idx = store.uploadedFiles.findIndex((f) => f.publicUrl === publicUrl);
+    if (idx < 0) return;
+    const file = store.uploadedFiles[idx];
+    try {
+      if (fs.existsSync(file.storagePath)) fs.unlinkSync(file.storagePath);
+    } catch {
+      /* disk cleanup is best-effort */
+    }
+    store.uploadedFiles.splice(idx, 1);
+  },
+
   getOrganizationMembers(orgId: string, adminId: string) {
     const org = this.getOrganizationById(orgId, adminId);
     if (!org) throw new Error("You don't have permission to view members for this organisation");
     return store.members
       .filter((m) => m.organizationId === orgId && m.status !== "removed")
+      .map((m) => {
+        const inviter = m.invitedBy ? store.users.find((u) => u.id === m.invitedBy) : undefined;
+        return {
+          ...m,
+          invitedByName: inviter?.fullName ?? null,
+          invitedByEmail: inviter?.email ?? null,
+        };
+      })
       .sort((a, b) => new Date(b.invitedAt).getTime() - new Date(a.invitedAt).getTime());
   },
 
@@ -799,43 +1015,76 @@ export const db = {
       accessProfileId?: string;
     },
     ctx?: ActivityContext
-  ) {
+  ): OrganizationMember & { emailSent: boolean } {
     const org = store.organizations.find((o) => o.id === orgId);
     if (!org) throw new Error("Organisation not found");
     if (!canInviteMembers(adminId, orgId)) {
       throw new Error("You don't have permission to invite members");
     }
     const normalized = email.toLowerCase().trim();
-    if (store.members.some((m) => m.organizationId === orgId && m.email === normalized && m.status !== "removed")) {
+    const activeDuplicate = store.members.some(
+      (m) => m.organizationId === orgId && m.email === normalized && m.status !== "removed",
+    );
+    if (activeDuplicate) {
       throw new Error("This person has already been invited to this organisation");
     }
-    const member: OrganizationMember = {
-      id: crypto.randomUUID(),
-      organizationId: orgId,
-      email: normalized,
-      userId: null,
-      status: "invited",
-      role,
-      title: extras?.title ?? null,
-      department: extras?.department ?? null,
-      phone: extras?.phone ?? null,
-      inviteMessage: extras?.inviteMessage ?? null,
-      invitedBy: adminId,
-      permissions: {},
-      accessProfileId: extras?.accessProfileId?.trim()
+
+    const now = new Date().toISOString();
+    const removed = store.members.find(
+      (m) => m.organizationId === orgId && m.email === normalized && m.status === "removed",
+    );
+
+    let member: OrganizationMember;
+    if (removed) {
+      removed.status = "invited";
+      removed.role = role;
+      removed.title = extras?.title ?? null;
+      removed.department = extras?.department ?? null;
+      removed.phone = extras?.phone ?? null;
+      removed.inviteMessage = extras?.inviteMessage ?? null;
+      removed.invitedBy = adminId;
+      removed.userId = null;
+      removed.joinedAt = null;
+      removed.invitedAt = now;
+      removed.updatedAt = now;
+      removed.accessProfileId = extras?.accessProfileId?.trim()
         ? extras.accessProfileId
-        : profileIdForRole(role),
-      invitedAt: new Date().toISOString(),
-      joinedAt: null,
-      updatedAt: new Date().toISOString(),
-    };
-    store.members.push(member);
+        : profileIdForRole(role);
+      member = removed;
+    } else {
+      member = {
+        id: crypto.randomUUID(),
+        organizationId: orgId,
+        email: normalized,
+        userId: null,
+        status: "invited",
+        role,
+        title: extras?.title ?? null,
+        department: extras?.department ?? null,
+        phone: extras?.phone ?? null,
+        inviteMessage: extras?.inviteMessage ?? null,
+        invitedBy: adminId,
+        permissions: {},
+        accessProfileId: extras?.accessProfileId?.trim()
+          ? extras.accessProfileId
+          : profileIdForRole(role),
+        invitedAt: now,
+        joinedAt: null,
+        updatedAt: now,
+      };
+      store.members.push(member);
+    }
+
     if (ctx) {
       log({ ...ctx, organizationId: orgId }, "member.invite", `Invited ${normalized} to ${org.name}`, {
         entityType: "member",
         entityId: member.id,
         metadata: { email: normalized, role },
       });
+    }
+
+    let emailSent = false;
+    try {
       const inviter = store.users.find((u) => u.id === adminId);
       sendOrgInviteEmailLocal({
         email: normalized,
@@ -845,9 +1094,13 @@ export const db = {
         inviteMessage: extras?.inviteMessage,
         inviterName: inviter?.fullName ?? null,
       });
+      emailSent = true;
+    } catch (err) {
+      console.error("[invite-member] email failed:", err);
     }
+
     saveDB(store);
-    return member;
+    return { ...member, emailSent };
   },
 
   updateMember(orgId: string, memberId: string, adminId: string, data: Partial<OrganizationMember>, ctx: ActivityContext) {
@@ -931,7 +1184,6 @@ export const db = {
     const members = store.members.filter(
       (m) => orgIds.has(m.organizationId) && m.status !== "removed",
     );
-    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const monthStart = new Date();
     monthStart.setDate(1);
     monthStart.setHours(0, 0, 0, 0);
@@ -950,9 +1202,6 @@ export const db = {
       activeMembers: members.filter((m) => m.status === "active").length,
       pendingInvites: members.filter((m) => m.status === "invited").length,
       organizationsByType,
-      activityLast7Days: store.activityLogs.filter(
-        (log) => log.userId === adminId && new Date(log.createdAt).getTime() >= sevenDaysAgo,
-      ).length,
       organizationsCreatedThisMonth: orgs.filter(
         (o) => new Date(o.createdAt).getTime() >= monthStart.getTime(),
       ).length,

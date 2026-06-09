@@ -4,6 +4,14 @@ import { useAuth } from "../contexts/AuthContext";
 import AppShell from "./AppShell";
 import { LoadingState } from "./QueryState";
 
+function BlockedRedirect({ message, signOut }: { message: string; signOut: () => void }) {
+  useEffect(() => {
+    signOut();
+  }, [signOut]);
+
+  return <Navigate to="/sign-in" replace state={{ message }} />;
+}
+
 export default function ProtectedLayout() {
   const { user, isLoading, signOut } = useAuth();
   const location = useLocation();
@@ -12,12 +20,8 @@ export default function ProtectedLayout() {
     user?.accountStatus === "deactivated" || user?.accountStatus === "suspended"
       ? "Your account is not active. Contact an administrator."
       : user && !user.isAdmin
-        ? "Admin access required."
+        ? "Admin access required. Ask a platform administrator to grant access."
         : null;
-
-  useEffect(() => {
-    if (blockedReason) signOut();
-  }, [blockedReason, signOut]);
 
   if (isLoading) {
     return (
@@ -27,12 +31,12 @@ export default function ProtectedLayout() {
     );
   }
 
-  if (!user) {
-    return <Navigate to="/sign-in" replace state={{ from: location.pathname }} />;
+  if (user && blockedReason) {
+    return <BlockedRedirect message={blockedReason} signOut={signOut} />;
   }
 
-  if (blockedReason) {
-    return <Navigate to="/sign-in" replace state={{ message: blockedReason }} />;
+  if (!user) {
+    return <Navigate to="/sign-in" replace state={{ from: location.pathname }} />;
   }
 
   return (

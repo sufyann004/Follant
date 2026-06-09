@@ -1,4 +1,6 @@
-import type { Profile } from "../types";
+import type { InvitePreview, Profile } from "../types";
+import { isSupabaseConfigured } from "./env";
+import { fetchInvitePreviewSupabase } from "./supabase-data";
 
 export interface AuthMeResponse {
   user: Profile;
@@ -9,9 +11,10 @@ export interface AuthSignInResponse {
   token: string;
 }
 
-export interface AuthSignUpResponse {
+export interface AuthAcceptInviteResponse {
   user: Profile;
   token: string;
+  orgId: string;
 }
 
 export interface AuthErrorResponse {
@@ -38,20 +41,35 @@ export async function signInWithApi(email: string, password: string): Promise<Au
   return data as AuthSignInResponse;
 }
 
-export async function signUpWithApi(payload: {
+export async function fetchInvitePreview(orgId: string, email: string): Promise<InvitePreview> {
+  if (isSupabaseConfigured()) {
+    const preview = await fetchInvitePreviewSupabase(orgId, email);
+    if (!preview) throw new Error("This invitation link is invalid or has expired");
+    return preview;
+  }
+
+  const params = new URLSearchParams({ orgId, email });
+  const res = await fetch(`/api/invites/preview?${params.toString()}`);
+  const data = (await res.json()) as InvitePreview | AuthErrorResponse;
+  if (!res.ok) throw new Error("error" in data ? data.error : "Could not load invitation");
+  return data as InvitePreview;
+}
+
+export async function acceptInviteWithApi(payload: {
+  orgId: string;
   email: string;
   password: string;
   fullName: string;
   phone?: string;
   jobTitle?: string;
   timezone?: string;
-}): Promise<AuthSignUpResponse> {
-  const res = await fetch("/api/auth/sign-up", {
+}): Promise<AuthAcceptInviteResponse> {
+  const res = await fetch("/api/auth/accept-invite", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const data = (await res.json()) as AuthSignUpResponse | AuthErrorResponse;
-  if (!res.ok) throw new Error("error" in data ? data.error : "Registration failed");
-  return data as AuthSignUpResponse;
+  const data = (await res.json()) as AuthAcceptInviteResponse | AuthErrorResponse;
+  if (!res.ok) throw new Error("error" in data ? data.error : "Could not accept invitation");
+  return data as AuthAcceptInviteResponse;
 }
