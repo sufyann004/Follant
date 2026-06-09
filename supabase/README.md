@@ -12,7 +12,73 @@ supabase db push
 # 005_security_hardening.sql
 # 006_directory_indexes.sql
 # 007_storage_pics_bucket.sql
+# 008_storage_no_svg.sql
+# 009_pentest_rls_hardening.sql
 ```
+
+## Updating an existing database
+
+If the project is already live, you do **not** need to reset or recreate it. Link the CLI and push only pending migrations:
+
+```bash
+npx supabase login
+npx supabase link --project-ref <your-project-ref>
+npx supabase migration list          # see what is applied remotely
+npm run supabase:db:push             # applies 008, 009, etc. if missing
+npm run supabase:functions:deploy    # redeploy after CORS / function changes
+```
+
+Verify in the SQL Editor:
+
+```sql
+select version from supabase_migrations.schema_migrations order by version;
+```
+
+**Dashboard alternative:** paste `008_storage_no_svg.sql` and `009_pentest_rls_hardening.sql` into the SQL Editor if you are not using the CLI.
+
+Regenerate types after new migrations:
+
+```bash
+npx supabase gen types typescript --project-id <your-project-ref> > src/lib/database.types.ts
+```
+
+## Platform admin (Supabase Auth)
+
+Supabase mode has **no built-in admin email or password**. Users sign up or accept invites with whatever credentials they choose.
+
+After migration **009**, new signups get `profiles.is_admin = false` by default. Promote your account once in the SQL Editor:
+
+```sql
+update public.profiles
+set is_admin = true
+where email = 'your-admin@example.com';
+```
+
+Use the same email and password as your Supabase Auth account. Reset the password from **Authentication → Users** in the dashboard if needed.
+
+**Local fallback** (Express + `db.json`, when Supabase env vars are unset):
+
+| Email | Password |
+|---|---|
+| `admin@example.com` | `Password123!` |
+
+See root `README.md` for local dev sign-in.
+
+## Security hardening (009)
+
+Migration `009_pentest_rls_hardening.sql` adds:
+
+| Control | Purpose |
+|---|---|
+| `handle_new_user()` | New users are not auto-promoted to platform admin |
+| Profile / member / org triggers | Block privilege escalation and tampering with sensitive columns |
+| `accept_organization_invite(uuid)` | Secure invite acceptance (replaces direct client UPDATE) |
+| `activate_pending_invites()` | Activates all pending invites on sign-in |
+| `get_invite_preview(uuid, text)` | Invite preview only when a valid pending invite exists |
+| Hardened `log_activity()` | Requires org access; rejects unknown actions |
+| FORCE RLS + revoked anon table grants | Tables are not readable by `anon` except via RPC |
+
+Invite acceptance and preview are called from the React app (`AuthContext`, `auth-api.ts`); do not re-enable direct client updates on `organization_members` for invite flows.
 
 ## Edge Functions (required for org create + member invite)
 
@@ -94,7 +160,8 @@ Org owners/admins see org-scoped logs via `can_view_org_activity()`.
 
 | NFR | Implementation |
 |---|---|
-| Security — RLS on every table | All public tables have RLS; helpers `is_platform_admin`, `can_manage_organization`, `can_invite_members`, etc. |
+| Security — RLS on every table | All public tables have RLS + FORCE RLS (009); helpers `is_platform_admin`, `can_manage_organization`, `can_invite_members`, etc. |
+| Pentest / IDOR | Invite RPCs, profile guards, audit log immutability, granular member/org policies (009) |
 | Audit integrity | Central `log_activity()` security definer; no client INSERT policy on `activity_logs` |
 | Least privilege | Role + access profile; invite policy uses `can_invite_members()` (not broad manage); `get_effective_permissions()` blocks cross-user enumeration (005) |
 | Org owner bootstrap | Trigger `handle_new_organization` adds creator as active owner member |

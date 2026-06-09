@@ -52,11 +52,15 @@ export function getSupabaseConfig(): SupabaseEnvConfig | null {
 
   const url =
     (isProd ? readEnv("VITE_SUPABASE_URL_PROD") : readEnv("VITE_SUPABASE_URL_DEV")) ??
-    readEnv("VITE_SUPABASE_URL");
+    readEnv("VITE_SUPABASE_URL") ??
+    readEnv("VITE_SUPABASE_URL_DEV") ??
+    readEnv("VITE_SUPABASE_URL_PROD");
 
   const anonKey =
     (isProd ? readEnv("VITE_SUPABASE_ANON_KEY_PROD") : readEnv("VITE_SUPABASE_ANON_KEY_DEV")) ??
-    readEnv("VITE_SUPABASE_ANON_KEY");
+    readEnv("VITE_SUPABASE_ANON_KEY") ??
+    readEnv("VITE_SUPABASE_ANON_KEY_DEV") ??
+    readEnv("VITE_SUPABASE_ANON_KEY_PROD");
 
   if (!url || !anonKey) {
     return null;

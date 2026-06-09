@@ -7,20 +7,22 @@ Deno.serve(async (req) => {
   const cors = handleCors(req);
   if (cors) return cors;
 
+  const reply = (body: unknown, status = 200) => jsonResponse(body, status, req);
+
   if (req.method !== "POST") {
-    return jsonResponse({ error: "Method not allowed" }, 405);
+    return reply({ error: "Method not allowed" }, 405);
   }
 
   try {
     const token = getBearerToken(req);
     if (!token) {
-      return jsonResponse({ error: "Missing authorization header" }, 401);
+      return reply({ error: "Missing authorization header" }, 401);
     }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
     if (!supabaseUrl || !supabaseAnonKey) {
-      return jsonResponse({ error: "Server misconfiguration" }, 500);
+      return reply({ error: "Server misconfiguration" }, 500);
     }
 
     const userClient = createClient(supabaseUrl, supabaseAnonKey, {
@@ -32,13 +34,13 @@ Deno.serve(async (req) => {
       error: authError,
     } = await userClient.auth.getUser(token);
     if (authError || !user) {
-      return jsonResponse({ error: "Unauthorized" }, 401);
+      return reply({ error: "Unauthorized" }, 401);
     }
 
     const body = await req.json();
     const parsed = inviteMemberSchema.safeParse(body);
     if (!parsed.success) {
-      return jsonResponse({ error: parsed.error.issues[0]?.message ?? "Validation failed" }, 400);
+      return reply({ error: parsed.error.issues[0]?.message ?? "Validation failed" }, 400);
     }
 
     const { orgId, email, role, accessProfileId, title, department, phone, inviteMessage } =
@@ -49,12 +51,12 @@ Deno.serve(async (req) => {
     });
     if (permError) {
       console.error("get_effective_permissions:", permError);
-      return jsonResponse({ error: "Permission check failed" }, 500);
+      return reply({ error: "Permission check failed" }, 500);
     }
 
     const canInvite = (perms as { members?: { invite?: boolean } })?.members?.invite === true;
     if (!canInvite) {
-      return jsonResponse({ error: "Forbidden: you do not have permission to invite members" }, 403);
+      return reply({ error: "Forbidden: you do not have permission to invite members" }, 403);
     }
 
     const { data: org, error: orgError } = await userClient
@@ -64,7 +66,7 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     if (orgError || !org) {
-      return jsonResponse({ error: "Organization not found" }, 404);
+      return reply({ error: "Organization not found" }, 404);
     }
 
     const normalizedEmail = email.toLowerCase().trim();
@@ -77,56 +79,97 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     if (existing && existing.status !== "removed") {
-      return jsonResponse(
+      return reply(
         { error: "This email has already been invited to this organization" },
         409,
       );
     }
 
-    const insertPayload: Record<string, unknown> = {
+    const memberPayload: Record<string, unknown> = {
       organization_id: orgId,
       email: normalizedEmail,
       status: "invited",
       role,
+      user_id: null,
+      joined_at: null,
       invited_by: user.id,
       title: title?.trim() || null,
       department: department?.trim() || null,
       phone: phone?.trim() || null,
       invite_message: inviteMessage?.trim() || null,
+      invited_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
 
     if (accessProfileId && accessProfileId !== "") {
-      insertPayload.access_profile_id = accessProfileId;
-    }
-
-    const { data: member, error: insertError } = await userClient
-      .from("organization_members")
-      .insert(insertPayload)
-      .select("*")
-      .single();
-
-    if (insertError) {
-      if (insertError.code === "23505") {
-        return jsonResponse(
-          { error: "This email has already been invited to this organization" },
-          409,
-        );
+      memberPayload.access_profile_id = accessProfileId;
+    } else {
+      const slugByRole: Record<string, string> = {
+        admin: "org_admin",
+        member: "org_member",
+        viewer: "org_viewer",
+      };
+      const { data: defaultProfile } = await userClient
+        .from("access_profiles")
+        .select("id")
+        .eq("slug", slugByRole[role] ?? "org_member")
+        .maybeSingle();
+      if (defaultProfile?.id) {
+        memberPayload.access_profile_id = defaultProfile.id;
       }
-      console.error("invite-member insert:", insertError);
-      return jsonResponse({ error: insertError.message }, 400);
     }
 
-    await userClient.rpc("log_activity", {
-      p_action: "member.invite",
-      p_description: `Invited ${normalizedEmail} to ${org.name}`,
-      p_organization_id: orgId,
-      p_entity_type: "member",
-      p_entity_id: member.id,
-      p_metadata: { email: normalizedEmail, role },
-    });
+    let member: Record<string, unknown>;
+
+    if (existing?.status === "removed") {
+      const { data: updated, error: updateError } = await userClient
+        .from("organization_members")
+        .update(memberPayload)
+        .eq("id", existing.id)
+        .select("*")
+        .single();
+
+      if (updateError) {
+        console.error("invite-member re-invite:", updateError);
+        return reply({ error: updateError.message }, 400);
+      }
+      member = updated as Record<string, unknown>;
+    } else {
+      const { data: inserted, error: insertError } = await userClient
+        .from("organization_members")
+        .insert(memberPayload)
+        .select("*")
+        .single();
+
+      if (insertError) {
+        if (insertError.code === "23505") {
+          return reply(
+            { error: "This email has already been invited to this organization" },
+            409,
+          );
+        }
+        console.error("invite-member insert:", insertError);
+        return reply({ error: insertError.message }, 400);
+      }
+      member = inserted as Record<string, unknown>;
+    }
 
     try {
-      await sendOrgInviteEmail({
+      await userClient.rpc("log_activity", {
+        p_action: "member.invite",
+        p_description: `Invited ${normalizedEmail} to ${org.name}`,
+        p_organization_id: orgId,
+        p_entity_type: "member",
+        p_entity_id: member.id,
+        p_metadata: { email: normalizedEmail, role },
+      });
+    } catch (logErr) {
+      console.error("[invite-member] activity log failed:", logErr);
+    }
+
+    let emailSent = false;
+    try {
+      const emailResult = await sendOrgInviteEmail({
         email: normalizedEmail,
         orgId,
         orgName: org.name,
@@ -135,13 +178,14 @@ Deno.serve(async (req) => {
         inviterName: (user.user_metadata?.full_name as string | undefined) ?? null,
         inviterEmail: user.email ?? null,
       });
+      emailSent = emailResult.sent;
     } catch (emailErr) {
       console.error("[invite-member] email failed:", emailErr);
     }
 
-    return jsonResponse(mapMemberResponse(member as Record<string, unknown>), 201);
+    return reply({ ...mapMemberResponse(member), emailSent }, 201);
   } catch (err) {
     console.error("invite-member error:", err);
-    return jsonResponse({ error: "Internal server error" }, 500);
+    return reply({ error: "Internal server error" }, 500);
   }
 });

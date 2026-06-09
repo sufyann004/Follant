@@ -1,6 +1,6 @@
 import { getSupabaseClient } from "./supabase";
-import { mapMemberRow, mapOrganizationRow, mapProfileRow } from "./supabase-mappers";
-import type { CreateOrgInput, Organization, OrganizationMember, Profile, UpdateOrgInput, DashboardStats, OrgType } from "../types";
+import { mapMemberRow, mapOrganizationRow, mapProfileRow, mapActivityLogRow } from "./supabase-mappers";
+import type { CreateOrgInput, Organization, OrganizationMember, Profile, UpdateOrgInput, DashboardStats, OrgType, InviteMemberResult, InvitePreview, ActivityLog } from "../types";
 
 function requireClient() {
   const client = getSupabaseClient();
@@ -16,19 +16,13 @@ export async function fetchProfile(userId: string): Promise<Profile | null> {
   return mapProfileRow(data as Record<string, unknown>);
 }
 
-/** Directory list: organizations created by the signed-in admin (FR #4). */
+/** Directory list: organisations visible via RLS (owner, member, or platform admin). */
 export async function fetchOrganizations(): Promise<Organization[]> {
   const supabase = requireClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-  if (authError || !user) throw new Error("Not authenticated");
 
   const { data, error } = await supabase
     .from("organizations")
     .select("*")
-    .eq("created_by", user.id)
     .order("created_at", { ascending: false });
 
   if (error) throw new Error(error.message);
@@ -54,6 +48,66 @@ export async function fetchOrganizations(): Promise<Organization[]> {
   return orgs.map((org) => mapOrganizationRow(org, countByOrg.get(String(org.id)) ?? 0));
 }
 
+export async function acceptOrganizationInvite(organizationId: string): Promise<void> {
+  const supabase = requireClient();
+  const { error } = await supabase.rpc("accept_organization_invite", {
+    p_organization_id: organizationId,
+  });
+  if (error) throw new Error(error.message);
+}
+
+export async function activatePendingInvites(): Promise<number> {
+  const supabase = requireClient();
+  const { data, error } = await supabase.rpc("activate_pending_invites");
+  if (error) throw new Error(error.message);
+  return typeof data === "number" ? data : 0;
+}
+
+export async function fetchInvitePreviewSupabase(
+  organizationId: string,
+  email: string,
+): Promise<InvitePreview | null> {
+  const supabase = requireClient();
+  const { data, error } = await supabase.rpc("get_invite_preview", {
+    p_organization_id: organizationId,
+    p_email: email.trim().toLowerCase(),
+  });
+  if (error) throw new Error(error.message);
+  if (!data || typeof data !== "object") return null;
+  const preview = data as Record<string, unknown>;
+  return {
+    orgId: String(preview.orgId),
+    orgName: String(preview.orgName),
+    email: String(preview.email),
+    role: preview.role as InvitePreview["role"],
+    title: preview.title != null ? String(preview.title) : null,
+    memberStatus: preview.memberStatus as InvitePreview["memberStatus"],
+    accountExists: Boolean(preview.accountExists),
+    canRegister: Boolean(preview.canRegister),
+    canAcceptWhileSignedIn: Boolean(preview.canAcceptWhileSignedIn),
+  };
+}
+
+export async function logActivity(params: {
+  action: string;
+  description: string;
+  organizationId?: string | null;
+  entityType?: string | null;
+  entityId?: string | null;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  const supabase = requireClient();
+  const { error } = await supabase.rpc("log_activity", {
+    p_action: params.action,
+    p_description: params.description,
+    p_organization_id: params.organizationId ?? null,
+    p_entity_type: params.entityType ?? null,
+    p_entity_id: params.entityId ?? null,
+    p_metadata: params.metadata ?? {},
+  });
+  if (error) console.warn("[log_activity]", error.message);
+}
+
 export async function fetchOrganization(id: string): Promise<Organization> {
   const supabase = requireClient();
   const { data, error } = await supabase.from("organizations").select("*").eq("id", id).single();
@@ -67,7 +121,17 @@ export async function fetchOrganization(id: string): Promise<Organization> {
     .eq("organization_id", id)
     .neq("status", "removed");
 
-  return mapOrganizationRow(data as Record<string, unknown>, count ?? 0);
+  const org = mapOrganizationRow(data as Record<string, unknown>, count ?? 0);
+
+  void logActivity({
+    action: "org.view",
+    description: `Viewed organization ${org.name}`,
+    organizationId: id,
+    entityType: "organization",
+    entityId: id,
+  });
+
+  return org;
 }
 
 export async function fetchOrganizationMembers(orgId: string): Promise<OrganizationMember[]> {
@@ -80,30 +144,175 @@ export async function fetchOrganizationMembers(orgId: string): Promise<Organizat
     .order("invited_at", { ascending: false });
 
   if (error) throw new Error(error.message);
-  return ((data ?? []) as Record<string, unknown>[]).map(mapMemberRow);
+  const members = ((data ?? []) as Record<string, unknown>[]).map(mapMemberRow);
+  const inviterIds = [...new Set(members.map((m) => m.invitedBy).filter(Boolean))] as string[];
+  if (inviterIds.length === 0) return members;
+
+  const { data: inviters, error: inviterError } = await supabase
+    .from("profiles")
+    .select("id, full_name, email")
+    .in("id", inviterIds);
+  if (inviterError) throw new Error(inviterError.message);
+
+  const inviterById = new Map(
+    (inviters ?? []).map((row) => [
+      String(row.id),
+      { name: (row.full_name as string | null) ?? null, email: (row.email as string | null) ?? null },
+    ]),
+  );
+
+  return members.map((m) => {
+    const inviter = m.invitedBy ? inviterById.get(m.invitedBy) : undefined;
+    return {
+      ...m,
+      invitedByName: inviter?.name ?? null,
+      invitedByEmail: inviter?.email ?? null,
+    };
+  });
 }
 
 export async function invokeCreateOrganization(payload: CreateOrgInput): Promise<Organization> {
   const supabase = requireClient();
-  const { data, error } = await supabase.functions.invoke("create-organization", { body: payload });
-  if (error) throw new Error(error.message);
-  const body = data as { error?: string } & Record<string, unknown>;
-  if (body?.error) throw new Error(body.error);
-  return mapOrganizationRow(body);
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+  if (authError || !user) throw new Error("You must be signed in to create an organisation");
+
+  const { organizationToDbInsert } = await import("./supabase-mappers");
+  const row = organizationToDbInsert(user.id, payload as Record<string, unknown>);
+
+  const { data, error } = await supabase.from("organizations").insert(row).select("*").single();
+  if (error) {
+    const msg = error.message.includes("check constraint")
+      ? "Organisation data failed validation — check required fields for the selected type"
+      : error.message;
+    throw new Error(msg);
+  }
+
+  try {
+    await logActivity({
+      action: "org.create",
+      description: `Created organization ${data.name}`,
+      organizationId: String(data.id),
+      entityType: "organization",
+      entityId: String(data.id),
+      metadata: { type: data.type },
+    });
+  } catch {
+    // Activity log is best-effort; org creation already succeeded.
+  }
+
+  return mapOrganizationRow(data as Record<string, unknown>, 0);
 }
 
 export async function invokeInviteMember(
   orgId: string,
   payload: Record<string, unknown>,
-): Promise<OrganizationMember> {
+): Promise<InviteMemberResult> {
   const supabase = requireClient();
-  const { data, error } = await supabase.functions.invoke("invite-member", {
-    body: { orgId, ...payload },
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+  if (authError || !user) throw new Error("You must be signed in to invite members");
+
+  const { data: perms, error: permError } = await supabase.rpc("get_effective_permissions", {
+    p_organization_id: orgId,
   });
-  if (error) throw new Error(error.message);
-  const body = data as { error?: string } & Record<string, unknown>;
-  if (body?.error) throw new Error(body.error);
-  return mapMemberRow(body);
+  if (permError) throw new Error("Permission check failed");
+  const canInvite = (perms as { members?: { invite?: boolean } })?.members?.invite === true;
+  if (!canInvite) throw new Error("You do not have permission to invite members");
+
+  const email = String(payload.email ?? "")
+    .toLowerCase()
+    .trim();
+  if (!email) throw new Error("Email is required");
+
+  const role = (payload.role as string) ?? "member";
+  const { data: existing } = await supabase
+    .from("organization_members")
+    .select("id, status")
+    .eq("organization_id", orgId)
+    .eq("email", email)
+    .maybeSingle();
+
+  if (existing && existing.status !== "removed") {
+    throw new Error("This email has already been invited to this organization");
+  }
+
+  const memberPayload: Record<string, unknown> = {
+    organization_id: orgId,
+    email,
+    status: "invited",
+    role,
+    user_id: null,
+    joined_at: null,
+    invited_by: user.id,
+    title: typeof payload.title === "string" ? payload.title.trim() || null : null,
+    department: typeof payload.department === "string" ? payload.department.trim() || null : null,
+    phone: typeof payload.phone === "string" ? payload.phone.trim() || null : null,
+    invite_message:
+      typeof payload.inviteMessage === "string" ? payload.inviteMessage.trim() || null : null,
+    invited_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  const accessProfileId = typeof payload.accessProfileId === "string" ? payload.accessProfileId.trim() : "";
+  if (accessProfileId) {
+    memberPayload.access_profile_id = accessProfileId;
+  } else {
+    const slugByRole: Record<string, string> = {
+      admin: "org_admin",
+      member: "org_member",
+      viewer: "org_viewer",
+    };
+    const { data: defaultProfile } = await supabase
+      .from("access_profiles")
+      .select("id")
+      .eq("slug", slugByRole[role] ?? "org_member")
+      .maybeSingle();
+    if (defaultProfile?.id) memberPayload.access_profile_id = defaultProfile.id;
+  }
+
+  let memberRow: Record<string, unknown>;
+  if (existing?.status === "removed") {
+    const { data, error } = await supabase
+      .from("organization_members")
+      .update(memberPayload)
+      .eq("id", existing.id)
+      .select("*")
+      .single();
+    if (error) throw new Error(error.message);
+    memberRow = data as Record<string, unknown>;
+  } else {
+    const { data, error } = await supabase
+      .from("organization_members")
+      .insert(memberPayload)
+      .select("*")
+      .single();
+    if (error) {
+      if (error.code === "23505") {
+        throw new Error("This email has already been invited to this organization");
+      }
+      throw new Error(error.message);
+    }
+    memberRow = data as Record<string, unknown>;
+  }
+
+  await logActivity({
+    action: "member.invite",
+    description: `Invited ${email}`,
+    organizationId: orgId,
+    entityType: "member",
+    entityId: String(memberRow.id),
+    metadata: { email, role },
+  });
+
+  return {
+    ...mapMemberRow(memberRow),
+    emailSent: false,
+  };
 }
 
 export async function updateOrganization(orgId: string, payload: UpdateOrgInput): Promise<Organization> {
@@ -159,6 +368,42 @@ export async function removeMember(orgId: string, memberId: string): Promise<voi
   if (error) throw new Error(error.message);
 }
 
+export async function deleteOrganization(orgId: string): Promise<void> {
+  const supabase = requireClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+  if (authError || !user) throw new Error("You must be signed in to delete an organisation");
+
+  const { data: org, error: readError } = await supabase
+    .from("organizations")
+    .select("id, name, created_by")
+    .eq("id", orgId)
+    .single();
+  if (readError) throw new Error(readError.message === "JSON object requested, multiple (or no) rows returned"
+    ? "Organisation not found"
+    : readError.message);
+
+  const isOwner = String(org.created_by) === user.id;
+  const { data: profile } = await supabase.from("profiles").select("is_admin").eq("id", user.id).maybeSingle();
+  if (!isOwner && !profile?.is_admin) {
+    throw new Error("You do not have permission to delete this organisation");
+  }
+
+  await logActivity({
+    action: "org.delete",
+    description: `Deleted organisation ${org.name}`,
+    organizationId: orgId,
+    entityType: "organization",
+    entityId: orgId,
+    metadata: { name: org.name },
+  });
+
+  const { error } = await supabase.from("organizations").delete().eq("id", orgId);
+  if (error) throw new Error(error.message);
+}
+
 export async function updateProfile(userId: string, payload: Record<string, unknown>): Promise<Profile> {
   const supabase = requireClient();
   const { profileToDbUpdate } = await import("./supabase-mappers");
@@ -173,7 +418,7 @@ export async function updateProfile(userId: string, payload: Record<string, unkn
   return mapProfileRow(data as Record<string, unknown>);
 }
 
-export async function fetchActivityLogs(options?: { orgId?: string; limit?: number }) {
+export async function fetchActivityLogs(options?: { orgId?: string; action?: string; limit?: number }): Promise<ActivityLog[]> {
   const supabase = requireClient();
   let query = supabase
     .from("activity_logs")
@@ -185,9 +430,13 @@ export async function fetchActivityLogs(options?: { orgId?: string; limit?: numb
     query = query.eq("organization_id", options.orgId);
   }
 
+  if (options?.action) {
+    query = query.eq("action", options.action);
+  }
+
   const { data, error } = await query;
   if (error) throw new Error(error.message);
-  return data ?? [];
+  return ((data ?? []) as Record<string, unknown>[]).map(mapActivityLogRow) as ActivityLog[];
 }
 
 export async function fetchAccessProfiles() {
@@ -225,8 +474,7 @@ export async function fetchDashboardStats(): Promise<DashboardStats> {
 
   const { data: orgs, error: orgError } = await supabase
     .from("organizations")
-    .select("id, type, created_at")
-    .eq("created_by", user.id);
+    .select("id, type, created_at");
 
   if (orgError) throw new Error(orgError.message);
 
@@ -244,18 +492,9 @@ export async function fetchDashboardStats(): Promise<DashboardStats> {
     members = memberRows ?? [];
   }
 
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const monthStart = new Date();
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
-
-  const { count: activityCount, error: activityError } = await supabase
-    .from("activity_logs")
-    .select("*", { count: "exact", head: true })
-    .eq("user_id", user.id)
-    .gte("created_at", sevenDaysAgo);
-
-  if (activityError) throw new Error(activityError.message);
 
   const organizationsByType = { school: 0, nonprofit: 0, business: 0 } as Record<OrgType, number>;
   for (const org of orgList) {
@@ -269,7 +508,6 @@ export async function fetchDashboardStats(): Promise<DashboardStats> {
     activeMembers: members.filter((m) => m.status === "active").length,
     pendingInvites: members.filter((m) => m.status === "invited").length,
     organizationsByType,
-    activityLast7Days: activityCount ?? 0,
     organizationsCreatedThisMonth: orgList.filter(
       (o) => new Date(String(o.created_at)).getTime() >= monthStart.getTime(),
     ).length,

@@ -70,6 +70,28 @@ export function mapOrganizationRow(row: Record<string, unknown>, memberCount?: n
   };
 }
 
+export function mapActivityLogRow(row: Record<string, unknown>) {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    organizationId: (row.organization_id as string | null) ?? null,
+    action: row.action,
+    actionLabel: (row.action_label as string | null) ?? null,
+    category: (row.category as string | null) ?? null,
+    severity: (row.severity as string | null) ?? null,
+    entityType: (row.entity_type as string | null) ?? null,
+    entityId: (row.entity_id as string | null) ?? null,
+    description: String(row.description),
+    metadata: (row.metadata as Record<string, unknown>) ?? {},
+    ipAddress: (row.ip_address as string | null) ?? null,
+    userAgent: (row.user_agent as string | null) ?? null,
+    actorName: (row.actor_name as string | null) ?? null,
+    actorEmail: (row.actor_email as string | null) ?? null,
+    organizationName: (row.organization_name as string | null) ?? null,
+    createdAt: String(row.created_at),
+  };
+}
+
 export function mapMemberRow(row: Record<string, unknown>): OrganizationMember {
   return {
     id: String(row.id),
@@ -89,6 +111,78 @@ export function mapMemberRow(row: Record<string, unknown>): OrganizationMember {
     joinedAt: (row.joined_at as string | null) ?? null,
     lastActiveAt: (row.last_active_at as string | null) ?? null,
     updatedAt: String(row.updated_at),
+  };
+}
+
+/** Maps camelCase API / edge-function responses (mapMemberResponse). */
+export function mapMemberFromApiResponse(row: Record<string, unknown>): OrganizationMember {
+  if (row.organization_id !== undefined) {
+    return mapMemberRow(row);
+  }
+  return {
+    id: String(row.id),
+    organizationId: String(row.organizationId),
+    email: String(row.email),
+    userId: (row.userId as string | null) ?? null,
+    status: row.status as OrganizationMember["status"],
+    role: row.role as OrganizationMember["role"],
+    title: (row.title as string | null) ?? null,
+    department: (row.department as string | null) ?? null,
+    phone: (row.phone as string | null) ?? null,
+    inviteMessage: (row.inviteMessage as string | null) ?? null,
+    invitedBy: (row.invitedBy as string | null) ?? null,
+    permissions: (row.permissions as Record<string, unknown>) ?? {},
+    accessProfileId: (row.accessProfileId as string | null) ?? null,
+    invitedAt: String(row.invitedAt),
+    joinedAt: (row.joinedAt as string | null) ?? null,
+    lastActiveAt: (row.lastActiveAt as string | null) ?? null,
+    updatedAt: String(row.updatedAt),
+  };
+}
+
+export function mapOrganizationFromApiResponse(row: Record<string, unknown>): Organization {
+  if (row.created_by !== undefined) {
+    return mapOrganizationRow(row);
+  }
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    slug: (row.slug as string | null) ?? null,
+    type: row.type as Organization["type"],
+    description: (row.description as string | null) ?? null,
+    website: (row.website as string | null) ?? null,
+    contactEmail: (row.contactEmail as string | null) ?? null,
+    contactPhone: (row.contactPhone as string | null) ?? null,
+    logoUrl: (row.logoUrl as string | null) ?? null,
+    bannerUrl: (row.bannerUrl as string | null) ?? null,
+    status: (row.status as Organization["status"]) ?? "active",
+    createdBy: String(row.createdBy),
+    addressLine1: (row.addressLine1 as string | null) ?? null,
+    addressLine2: (row.addressLine2 as string | null) ?? null,
+    city: (row.city as string | null) ?? null,
+    stateRegion: (row.stateRegion as string | null) ?? null,
+    postalCode: (row.postalCode as string | null) ?? null,
+    country: (row.country as string | null) ?? "GB",
+    timezone: String(row.timezone ?? "Europe/London"),
+    locale: String(row.locale ?? "en-GB"),
+    currency: String(row.currency ?? "GBP"),
+    tags: (row.tags as string[]) ?? [],
+    settings: (row.settings as Record<string, unknown>) ?? {},
+    schoolDistrict: (row.schoolDistrict as string | null) ?? null,
+    schoolGradeLevels: (row.schoolGradeLevels as string | null) ?? null,
+    schoolAccreditation: (row.schoolAccreditation as string | null) ?? null,
+    schoolStudentCount: (row.schoolStudentCount as number | null) ?? null,
+    nonprofitEin: (row.nonprofitEin as string | null) ?? null,
+    nonprofitTaxStatus: (row.nonprofitTaxStatus as string | null) ?? null,
+    nonprofitMission: (row.nonprofitMission as string | null) ?? null,
+    nonprofitFoundedYear: (row.nonprofitFoundedYear as number | null) ?? null,
+    businessRegNumber: (row.businessRegNumber as string | null) ?? null,
+    businessIndustry: (row.businessIndustry as string | null) ?? null,
+    businessCompanySize: (row.businessCompanySize as string | null) ?? null,
+    businessTaxId: (row.businessTaxId as string | null) ?? null,
+    businessDunsNumber: (row.businessDunsNumber as string | null) ?? null,
+    createdAt: String(row.createdAt),
+    updatedAt: String(row.updatedAt),
   };
 }
 
@@ -120,6 +214,51 @@ export function profileToDbUpdate(data: {
   if (data.notifySms !== undefined) out.notify_sms = data.notifySms;
   if (data.notifyMarketing !== undefined) out.notify_marketing = data.notifyMarketing;
   return out;
+}
+
+const emptyText = (v: unknown) => (typeof v === "string" && v.trim() !== "" ? v.trim() : null);
+const numOrNull = (v: unknown) => (typeof v === "number" && !Number.isNaN(v) ? v : null);
+
+/** Insert row for organizations (mirrors Edge Function mapCreateOrgRow). */
+export function organizationToDbInsert(
+  userId: string,
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  const type = data.type as string;
+  return {
+    name: String(data.name).trim(),
+    type,
+    created_by: userId,
+    slug: emptyText(data.slug),
+    description: emptyText(data.description),
+    website: emptyText(data.website),
+    contact_email: emptyText(data.contactEmail),
+    contact_phone: emptyText(data.contactPhone),
+    status: data.status ?? "active",
+    address_line1: emptyText(data.addressLine1),
+    address_line2: emptyText(data.addressLine2),
+    city: emptyText(data.city),
+    state_region: emptyText(data.stateRegion),
+    postal_code: emptyText(data.postalCode),
+    country: emptyText(data.country) ?? "GB",
+    timezone: emptyText(data.timezone) ?? "Europe/London",
+    locale: emptyText(data.locale) ?? "en-GB",
+    currency: emptyText(data.currency) ?? "GBP",
+    tags: (data.tags as string[] | undefined) ?? [],
+    school_district: type === "school" ? emptyText(data.schoolDistrict) : null,
+    school_grade_levels: type === "school" ? emptyText(data.schoolGradeLevels) : null,
+    school_accreditation: type === "school" ? emptyText(data.schoolAccreditation) : null,
+    school_student_count: type === "school" ? numOrNull(data.schoolStudentCount) : null,
+    nonprofit_ein: type === "nonprofit" ? emptyText(data.nonprofitEin) : null,
+    nonprofit_tax_status: type === "nonprofit" ? emptyText(data.nonprofitTaxStatus) : null,
+    nonprofit_mission: type === "nonprofit" ? emptyText(data.nonprofitMission) : null,
+    nonprofit_founded_year: type === "nonprofit" ? numOrNull(data.nonprofitFoundedYear) : null,
+    business_reg_number: type === "business" ? emptyText(data.businessRegNumber) : null,
+    business_industry: type === "business" ? emptyText(data.businessIndustry) : null,
+    business_company_size: type === "business" ? emptyText(data.businessCompanySize) : null,
+    business_tax_id: type === "business" ? emptyText(data.businessTaxId) : null,
+    business_duns_number: type === "business" ? emptyText(data.businessDunsNumber) : null,
+  };
 }
 
 export function organizationToDbUpdate(data: Record<string, unknown>): Record<string, unknown> {

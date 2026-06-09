@@ -116,6 +116,10 @@ dist
 # Local dev email captures (file-db mode)
 data/emails/
 
+# Local file database and uploads (never commit runtime data)
+db.json
+uploads/
+
 # Serverless directories
 .serverless/
 

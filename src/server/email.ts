@@ -53,7 +53,7 @@ export function sendOrgInviteEmailLocal(input: {
   inviteMessage?: string | null;
   inviterName?: string | null;
 }) {
-  const link = `${appUrl()}/sign-up?org=${encodeURIComponent(input.orgId)}&email=${encodeURIComponent(input.email)}`;
+  const link = `${appUrl()}/accept-invite?org=${encodeURIComponent(input.orgId)}&email=${encodeURIComponent(input.email)}`;
   const note = input.inviteMessage
     ? `<p style="margin:16px 0;padding:12px 16px;background:#f5f5f5;border-left:3px solid #0a0a0a;border-radius:8px;font-style:italic;">"${escapeHtml(input.inviteMessage)}"</p>`
     : "";

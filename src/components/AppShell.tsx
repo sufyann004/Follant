@@ -2,7 +2,6 @@ import { useState, useEffect, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import {
-  Building2,
   Plus,
   LogOut,
   FolderIcon,
@@ -12,7 +11,9 @@ import {
   Settings,
   BarChart3,
 } from "lucide-react";
+import { FollantBrand } from "./FollantLogo";
 import { ThemeToggle } from "./ThemeToggle";
+import { useConfirm } from "./ConfirmProvider";
 
 function isNavActive(pathname: string, href: string): boolean {
   if (href === "/orgs") {
@@ -26,6 +27,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const confirm = useConfirm();
 
   const navigation = [
     { name: "Organisations", href: "/orgs", icon: FolderIcon },
@@ -39,7 +41,15 @@ export default function AppShell({ children }: { children: ReactNode }) {
     setMobileMenuOpen(false);
   }, [location.pathname]);
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
+    const ok = await confirm({
+      title: "Sign out?",
+      description: "You will need to sign in again to access your organisations and account settings.",
+      confirmLabel: "Sign out",
+      cancelLabel: "Stay signed in",
+      variant: "default",
+    });
+    if (!ok) return;
     signOut();
     navigate("/sign-in");
   };
@@ -54,12 +64,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen app-shell-main flex flex-col md:flex-row overflow-x-hidden">
       <header className="md:hidden sticky top-0 z-30 bg-neutral-950 text-white px-4 py-3 flex items-center justify-between border-b border-neutral-800">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className="h-8 w-8 shrink-0 rounded-lg flex items-center justify-center bg-indigo-500 text-white">
-            <Building2 className="h-4 w-4" />
-          </div>
-          <span className="font-bold text-base sm:text-lg tracking-tight truncate">Follant</span>
-        </div>
+        <FollantBrand logoClassName="h-8 w-8" wordmarkClassName="font-bold text-base sm:text-lg tracking-tight" />
         <button
           type="button"
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -115,11 +120,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
       )}
 
       <aside className="hidden md:flex flex-col w-64 shrink-0 bg-neutral-950 text-white min-h-screen border-r border-neutral-800">
-        <div className="px-6 py-6 border-b border-neutral-800 flex items-center gap-2.5">
-          <div className="h-9 w-9 rounded-lg flex items-center justify-center bg-indigo-500 text-white shrink-0">
-            <Building2 className="h-5 w-5" />
-          </div>
-          <span className="font-bold text-lg tracking-tight">Follant</span>
+        <div className="px-6 py-6 border-b border-neutral-800">
+          <FollantBrand wordmarkClassName="font-bold text-lg tracking-tight text-white" />
         </div>
 
         <nav className="flex-1 px-4 py-6 flex flex-col gap-1.5 overflow-y-auto">

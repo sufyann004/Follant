@@ -10,6 +10,7 @@ import { OrgContactFields } from "../components/forms/OrgContactFields";
 import { omitPhoneUiFields } from "../lib/validation";
 import { DEFAULT_COUNTRY } from "../lib/countries";
 import { ORG_TYPE_LABELS } from "../types";
+import { useConfirm } from "../components/ConfirmProvider";
 import {
   ArrowLeft,
   Loader2,
@@ -23,6 +24,7 @@ type CreateOrgInputs = z.input<typeof createOrgSchema>;
 export default function CreateOrgPage() {
   const navigate = useNavigate();
   const createMutation = useCreateOrganization();
+  const confirm = useConfirm();
 
   const methods = useForm<CreateOrgInputs>({
     resolver: zodResolver(createOrgSchema),
@@ -66,6 +68,19 @@ export default function CreateOrgPage() {
   const selectedType = useWatch({ control, name: "type" });
 
   const onSubmit = async (data: CreateOrgInputs) => {
+    const typeLabel = ORG_TYPE_LABELS[data.type ?? "school"];
+    const ok = await confirm({
+      title: "Create organisation?",
+      description: (
+        <>
+          Create <strong>{data.name}</strong> as a {typeLabel} organisation? You will be set as the owner and
+          can invite members after it is created.
+        </>
+      ),
+      confirmLabel: "Create organisation",
+    });
+    if (!ok) return;
+
     const payload = omitPhoneUiFields(data) as CreateOrgPayload;
     createMutation.mutate(payload, {
       onSuccess: (newOrg) => navigate(`/orgs/${newOrg.id}`),

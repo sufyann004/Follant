@@ -86,11 +86,70 @@ npm run dev
 
 ## Deployment (Vercel)
 
-1. Connect the GitHub repo to a Vercel project.
-2. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in Vercel's environment variable settings.
-3. Set the production branch to `main` and the preview branch to `development`.
+The app is **Supabase-only** on Vercel: static Vite SPA + Supabase Auth, Postgres, Storage, and Edge Functions. No Express server is required.
 
-Both URLs are live and functional independently.
+### 1. Connect repo
+
+Import the GitHub repo in [Vercel](https://vercel.com). `vercel.json` sets:
+
+- **Build:** `npm run build:web` (`vite build`)
+- **Output:** `dist/`
+- **SPA rewrites** for React Router
+
+### 2. Vercel environment variables (Production)
+
+Copy values from your local `.env` (same Supabase project = same behaviour as dev):
+
+| Variable | Example |
+|---|---|
+| `VITE_SUPABASE_URL_PROD` | `https://xxxx.supabase.co` |
+| `VITE_SUPABASE_ANON_KEY_PROD` | anon key from Supabase → Settings → API |
+| `VITE_SUPABASE_STORAGE_BUCKET_PROD` | `Pics` |
+
+Do **not** put the service role key in Vercel (browser bundle). It belongs only in Supabase Edge Function secrets.
+
+Redeploy after changing any `VITE_*` variable.
+
+### 3. Supabase Auth URLs
+
+In **Supabase Dashboard → Authentication → URL Configuration**:
+
+| Setting | Value |
+|---|---|
+| **Site URL** | `https://your-app.vercel.app` |
+| **Redirect URLs** | `http://localhost:3000/**`, `https://your-app.vercel.app/**`, `https://*.vercel.app/**` (preview) |
+
+### 4. Edge Function secrets
+
+In **Supabase Dashboard → Edge Functions → Secrets** (or `supabase secrets set`):
+
+```bash
+APP_URL=https://your-app.vercel.app
+ALLOWED_ORIGINS=http://localhost:3000,https://your-app.vercel.app,https://your-project.vercel.app
+```
+
+Then redeploy functions:
+
+```bash
+npm run supabase:functions:deploy
+```
+
+`APP_URL` is used for invite and password-reset links. `ALLOWED_ORIGINS` lets Edge Functions accept requests from both local dev and Vercel.
+
+### 5. Platform admin
+
+Promote your user once in the SQL Editor (see [supabase/README.md](supabase/README.md)).
+
+### Local vs Vercel
+
+| | Local (`npm run dev`) | Vercel (production build) |
+|---|---|---|
+| Vite mode | `development` | `production` |
+| Supabase env keys | `VITE_*_DEV` | `VITE_*_PROD` (falls back to `_DEV` if unset) |
+| Auth / data / storage | Supabase | Same Supabase project |
+| Org create / invite | Edge Functions | Same Edge Functions |
+
+Both URLs are live and functional independently when env + Supabase URLs are configured as above.
 
 ---
 

@@ -9,23 +9,11 @@ export function useActivityLogs(filters?: { organizationId?: string; action?: st
     queryKey: ["activity", filters],
     queryFn: async () => {
       if (supabase) {
-        const rows = await fetchActivityLogs({
+        return fetchActivityLogs({
           orgId: filters?.organizationId,
+          action: filters?.action,
           limit: filters?.limit,
         });
-        return rows.map((row) => ({
-          id: String(row.id),
-          userId: String(row.user_id),
-          organizationId: (row.organization_id as string | null) ?? null,
-          action: row.action,
-          entityType: (row.entity_type as string | null) ?? null,
-          entityId: (row.entity_id as string | null) ?? null,
-          description: row.description,
-          metadata: (row.metadata as Record<string, unknown>) ?? {},
-          ipAddress: (row.ip_address as string | null) ?? null,
-          userAgent: (row.user_agent as string | null) ?? null,
-          createdAt: String(row.created_at),
-        })) as ActivityLog[];
       }
       const params = new URLSearchParams();
       if (filters?.organizationId) params.set("organizationId", filters.organizationId);
@@ -45,20 +33,7 @@ export function useOrgActivityLogs(orgId: string | undefined) {
     queryKey: ["activity", "org", orgId],
     queryFn: async () => {
       if (!orgId) throw new Error("Organization ID required");
-      if (supabase) {
-        const rows = await fetchActivityLogs({ orgId });
-        return rows.map((row) => ({
-          id: String(row.id),
-          userId: String(row.user_id),
-          organizationId: (row.organization_id as string | null) ?? null,
-          action: row.action,
-          entityType: (row.entity_type as string | null) ?? null,
-          entityId: (row.entity_id as string | null) ?? null,
-          description: row.description,
-          metadata: (row.metadata as Record<string, unknown>) ?? {},
-          createdAt: String(row.created_at),
-        })) as ActivityLog[];
-      }
+      if (supabase) return fetchActivityLogs({ orgId });
       const res = await fetch(`/api/organizations/${orgId}/activity`, { headers: await getAuthHeaders() });
       if (!res.ok) await parseError(res, "Failed to load organization activity");
       return res.json();

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Profile, UserSession } from "../types";
 import { getAuthHeaders, parseError, uploadWithAuth, useSupabaseBackend } from "../lib/api";
-import { getSupabaseClient } from "../lib/supabase";
+import { getSupabaseClient, clearSupabaseSession } from "../lib/supabase";
 import { updateProfile as supabaseUpdateProfile } from "../lib/supabase-data";
 import type { UpdateProfilePayload, updatePreferencesSchema, changePasswordSchema } from "../types";
 import type { z } from "zod";
@@ -81,6 +81,18 @@ export function useChangePassword() {
       if (supabase) {
         const client = getSupabaseClient();
         if (!client) throw new Error("Sign-in is temporarily unavailable. Please try again later.");
+        const {
+          data: { user },
+          error: userError,
+        } = await client.auth.getUser();
+        if (userError || !user?.email) throw new Error("Not authenticated");
+
+        const { error: verifyError } = await client.auth.signInWithPassword({
+          email: user.email,
+          password: body.currentPassword,
+        });
+        if (verifyError) throw new Error("Current password is incorrect");
+
         const { error } = await client.auth.updateUser({ password: body.newPassword });
         if (error) throw new Error(error.message);
         return { ok: true };
@@ -109,6 +121,30 @@ export function useUploadAvatar() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+      queryClient.invalidateQueries({ queryKey: ["activity"] });
+    },
+  });
+}
+
+export function useDeleteAvatar() {
+  const queryClient = useQueryClient();
+  const supabase = useSupabaseBackend();
+  return useMutation<{ user: Profile }, Error, void>({
+    mutationFn: async () => {
+      if (supabase) {
+        const { deleteAvatar } = await import("../lib/supabase-storage");
+        return deleteAvatar();
+      }
+      const res = await fetch("/api/account/avatar", {
+        method: "DELETE",
+        headers: await getAuthHeaders(),
+      });
+      if (!res.ok) await parseError(res, "Could not remove avatar");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+      queryClient.invalidateQueries({ queryKey: ["auth", "legacy-session"] });
       queryClient.invalidateQueries({ queryKey: ["activity"] });
     },
   });
@@ -145,7 +181,7 @@ export function useDeactivateAccount() {
           .update({ account_status: "deactivated", updated_at: new Date().toISOString() })
           .eq("id", userId);
         if (error) throw new Error(error.message);
-        await client.auth.signOut();
+        clearSupabaseSession();
         return { ok: true };
       }
       const res = await fetch("/api/account/deactivate", {
